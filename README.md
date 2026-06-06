@@ -1,10 +1,10 @@
-# DB Buddy
+# dbbuddy
 
 A Python CLI tool that connects to a MySQL database, reads its schema metadata, maps column names to generalized semantic terms using a plugin system, and outputs the result to `output.json`.
 
 ## Overview
 
-DB Buddy analyzes database schemas by classifying column names into semantic categories like "value", "quantity", "name", "date", "identifier", "status", and "description". This helps understand the purpose of database columns without manual inspection.
+dbbuddy analyzes database schemas by classifying column names into semantic categories like "value", "quantity", "name", "date", "identifier", "status", and "description". This helps understand the purpose of database columns without manual inspection.
 
 ## Features
 
@@ -60,7 +60,7 @@ You will be prompted for MySQL database credentials:
 - **Password** (masked input) - MySQL password
 - **Database name** (required) - MySQL database name
 
-**Note:** DB Buddy connects to an existing MySQL database. You must have MySQL installed and configured with a database before running the tool. The username and password are your MySQL database credentials, not DB Buddy tool credentials.
+**Note:** dbbuddy connects to an existing MySQL database. You must have MySQL installed and configured with a database before running the tool. The username and password are your MySQL database credentials, not dbbuddy tool credentials.
 
 Example session:
 ```
@@ -71,7 +71,7 @@ Password:
 Database: mydb
 Connected to MySQL database successfully
 Schema fetched successfully
-Output written to: C:\Users\Sujal\Projects\DB Buddy\output.json
+Output written to: C:\Users\Sujal\Projects\dbbuddy\output.json
 ```
 
 ## Output Format
@@ -246,7 +246,7 @@ YYYY-MM-DD HH:MM:SS | LEVEL | Message
 
 ## Configuration
 
-DB Buddy supports configuration via JSON file for scriptable, repeatable deployments:
+dbbuddy supports configuration via JSON file for scriptable, repeatable deployments:
 
 **Usage modes:**
 1. Interactive (default): `.venv\Scripts\dbbuddy.exe` or `dbbuddy` (if Scripts in PATH)
@@ -285,7 +285,7 @@ DB Buddy supports configuration via JSON file for scriptable, repeatable deploym
 
 ## Plugin System
 
-DB Buddy supports a plugin system for custom mapping logic. Plugins allow you to extend or replace the default column classification rules without modifying the core code.
+dbbuddy supports a plugin system for custom mapping logic. Plugins allow you to extend or replace the default column classification rules without modifying the core code.
 
 **Plugin structure:**
 ```
@@ -326,7 +326,7 @@ All plugins must inherit from `MappingPlugin` and implement the `classify(column
 
 ## Local AI Setup (Ollama)
 
-DB Buddy uses Ollama for local AI classification by default.
+dbbuddy uses Ollama for local AI classification by default.
 
 **Prerequisites:**
 - Install Ollama: https://ollama.com
@@ -348,7 +348,7 @@ ollama run llama3
 .venv\Scripts\dbbuddy.exe --ai
 ```
 
-**Note:** Ollama runs locally at http://localhost:11434 and does not require an API key. If Ollama is not running, DB Buddy will log a warning and fall back to "unknown" for AI classifications.
+**Note:** Ollama runs locally at http://localhost:11434 and does not require an API key. If Ollama is not running, dbbuddy will log a warning and fall back to "unknown" for AI classifications.
 
 ## AI Integration
 
@@ -404,4 +404,8 @@ export OPENAI_API_KEY=your_api_key  # Linux/Mac
 
 ## License
 
-This project is provided as-is for educational and practical use.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Repository
+
+[GitHub Repository](https://github.com/sxjalxo/dbbuddy.git)

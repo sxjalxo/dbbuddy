@@ -366,7 +366,7 @@ def main():
     # ── Version flag ───────────────────────────────────────────────────────────
     if "--version" in sys.argv:
         from dbbuddy import __version__
-        print(f"DB Buddy v{__version__}")
+        print(f"dbbuddy v{__version__}")
         sys.exit(0)
     
     # ── Load configuration ──────────────────────────────────────────────────────

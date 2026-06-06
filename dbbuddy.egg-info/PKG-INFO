@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: dbbuddy
+Version: 0.1.0
+Summary: CLI tool for database semantic mapping with AI
+Author: DB Buddy
+License-File: LICENSE
+Requires-Dist: mysql-connector-python>=8.3.0
+Requires-Dist: requests>=2.31.0
+Dynamic: license-file

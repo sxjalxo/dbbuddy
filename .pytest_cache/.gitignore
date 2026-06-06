@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/
+
+# Logs
+logs/
+*.log
+
+# Pytest
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
