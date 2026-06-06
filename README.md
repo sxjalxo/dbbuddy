@@ -216,7 +216,7 @@ Test coverage includes:
 
 ## Logging
 
-DB Buddy writes structured logs to `logs/dbbuddy.log` for operational visibility:
+dbbuddy writes structured logs to `logs/dbbuddy.log` for operational visibility:
 
 **Log format:**
 ```
