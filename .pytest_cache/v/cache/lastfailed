@@ -1,4 +1,0 @@
-{
-  "tests/test_main.py::TestAIMapper::test_ai_refine_logs_classification": true,
-  "tests/test_main.py::TestAIMapper::test_ai_refine_logs_failure": true
-}
