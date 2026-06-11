@@ -2,6 +2,7 @@ import { Sparkles, Settings2 } from "lucide-react";
 
 export type SemanticColumn = {
   column: string;
+  table?: string;
   source?: string;
   provider?: string;
   plugin?: string;
@@ -19,11 +20,16 @@ export function SemanticGroup({ term, columns }: { term: string; columns: Semant
       </div>
 
       <div className="space-y-2">
-        {columns.map((col) => (
-          <article key={col.column} className="rounded-xl border border-border/70 bg-background/70 p-3">
+        {columns.map((col, ci) => (
+          <article
+            key={col.table ? `${col.table}-${col.column}-${term}` : `fallback-${ci}-${col.column}`}
+            className="rounded-xl border border-border/70 bg-background/70 p-3"
+          >
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="font-mono text-sm text-foreground">{col.column}</div>
+                <div className="font-mono text-sm text-foreground">
+                  {col.table ? <span className="text-muted-foreground">{col.table}.</span> : null}{col.column}
+                </div>
                 <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
                   <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-primary">
                     <Sparkles className="h-3 w-3" /> {col.source ?? col.provider ?? "ai"}

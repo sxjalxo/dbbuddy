@@ -6,7 +6,7 @@ import dbbuddy_core.mapping as mapping_module
 import dbbuddy_core.schema as schema_module
 from dbbuddy_core.ai import ai_refine
 from dbbuddy_core.models import DBConfig
-from dbbuddy_core.query import execute_query, fix_sql, fix_sql_with_ai, generate_sql, get_query_type, is_ollama_running, safe_execute
+from dbbuddy_core.query import execute_query, fix_sql, fix_sql_with_ai, generate_sql, get_query_type, is_ollama_running, plan_intent, safe_execute, validate_against_schema
 
 
 def process_schema(config: DBConfig | None = None, **kwargs):
@@ -127,8 +127,11 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
     if config.ai_provider in ("local", "hybrid") and not is_ollama_running():
         logger.warning("Ollama not running. Falling back to OpenAI if available.")
 
-    sql = generate_sql(user_query, semantic, provider=config.ai_provider)
+    sql = generate_sql(user_query, semantic, provider=config.ai_provider, schema=schema)
     query_type = get_query_type(sql)
+
+    # Schema validation — catch hallucinated table/column names before hitting the DB
+    schema_check = validate_against_schema(sql, schema) if query_type != "invalid" else {"valid": True, "unknown_tables": [], "unknown_columns": []}
 
     response = {
         "query": user_query,
@@ -136,7 +139,36 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
         "query_type": query_type,
         "semantic_layer": semantic,
         "auto_executed": False,
+        "schema_validation": schema_check,
     }
+
+    if query_type == "invalid":
+        response["auto_executed"] = False
+        response["warning"] = "SQL generation failed. The model could not produce a valid query. Try rephrasing your question."
+        response["confidence"] = "low"
+        return response
+
+    if not schema_check["valid"]:
+        logger.warning(f"Schema validation failed: {schema_check}")
+        # Attempt a fix before giving up — pass the validation failure as the error
+        hint = []
+        if schema_check["unknown_tables"]:
+            hint.append(f"Unknown tables: {schema_check['unknown_tables']}")
+        if schema_check["unknown_columns"]:
+            hint.append(f"Unknown columns: {schema_check['unknown_columns']}")
+        error_hint = "; ".join(hint)
+        fixed_sql = fix_sql(error_hint, sql, semantic, provider=config.ai_provider)
+        fixed_check = validate_against_schema(fixed_sql, schema)
+        if fixed_check["valid"] and get_query_type(fixed_sql) != "invalid":
+            sql = fixed_sql
+            response["sql"] = sql
+            response["schema_validation"] = fixed_check
+            response["auto_fixed"] = True
+        else:
+            response["auto_executed"] = False
+            response["warning"] = f"Generated SQL references unknown identifiers: {error_hint}. Try rephrasing."
+            response["confidence"] = "low"
+            return response
 
     if query_type == "select":
         execution = safe_execute(conn, sql)

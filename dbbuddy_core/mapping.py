@@ -1,4 +1,5 @@
 # ── HARDCODED_MAP ───────────────────────────────────────────────────────────
+from dbbuddy_core.ai import _normalize
 HARDCODED_MAP = {
     "amt": "value", "amount": "value", "price": "value",
     "cost": "value", "total": "value", "revenue": "value",
@@ -30,7 +31,7 @@ def map_column(col_name: str) -> str:
         import logging
         logger = logging.getLogger(__name__)
         logger.error(f"Plugin classification failed for '{col_name}': {str(e)}")
-        return "unknown"
+        return _normalize(col_name)  # fallback to normalized column name
 
 
 def map_schema(schema: dict) -> dict[str, dict[str, dict]]:

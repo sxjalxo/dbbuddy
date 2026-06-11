@@ -142,17 +142,17 @@ dbbuddy --config config.json
 
 | Provider | Model | When to use |
 |---|---|---|
-| `local` | llama3 via Ollama | Default. Runs fully offline, no API key needed |
+| `local` | deepseek-coder via Ollama | Default. Runs fully offline, no API key needed |
 | `openai` | gpt-4o-mini | Cloud. Requires `OPENAI_API_KEY` |
-| `hybrid` | local → OpenAI | Local first; falls back to OpenAI only if Ollama is unreachable or returns `unknown` |
+| `hybrid` | local → OpenAI | Local first; falls back to OpenAI only if Ollama is unreachable or returns invalid SQL |
 
 **Hybrid priority rule:** DB Buddy always tries the local Ollama model first in hybrid mode. It only falls back to the OpenAI API if the Ollama server is unreachable, times out, or returns an unusable result.
 
 ### Local AI setup (Ollama)
 
 ```bash
-ollama pull llama3
-ollama serve          # starts server at localhost:11434
+ollama pull deepseek-coder
+ollama serve          # starts server at http://127.0.0.1:11434
 ```
 
 ---
@@ -268,7 +268,7 @@ The default plugin maps 27 keywords to 7 semantic terms:
 | status, state, flag | `status` |
 | desc, description, note, comment | `description` |
 
-Matching: exact (case-insensitive) → substring (longest key wins) → `unknown`
+Matching: exact (case-insensitive) → substring (longest key wins) → normalized column name
 
 ### Custom plugins
 

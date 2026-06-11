@@ -1,9 +1,49 @@
 # ── AI_Mapper ───────────────────────────────────────────────────────────────
 import os
+import re
 import requests
 import logging
 
 _ai_cache = {}
+
+
+_TOKEN_EXPANSIONS = {
+    "id":   "identifier",
+    "ids":  "identifiers",
+    "qty":  "quantity",
+    "amt":  "amount",
+    "val":  "value",
+    "num":  "number",
+    "desc": "description",
+    "ts":   "timestamp",
+    "dt":   "date",
+    "url":  "url",
+    "img":  "image",
+    "msg":  "message",
+    "ref":  "reference",
+    "pct":  "percent",
+}
+
+
+def _normalize(col_name: str) -> str:
+    """Normalize a column name into a human-readable semantic fallback term.
+
+    Pipeline:
+      1. Split camelCase / PascalCase  (productName → 'product Name')
+      2. Replace underscores with spaces (created_at → 'created at')
+      3. Lowercase
+      4. Expand common abbreviations   (user id → 'user identifier')
+
+    Examples:
+      created_at  → 'created at'
+      productName → 'product name'
+      orderID     → 'order identifier'
+      userAmt     → 'user amount'
+    """
+    col = re.sub(r'([a-z])([A-Z])', r'\1 \2', col_name)  # camelCase split
+    col = col.replace("_", " ").lower()
+    tokens = [_TOKEN_EXPANSIONS.get(t, t) for t in col.split()]
+    return " ".join(tokens)
 
 
 def build_knowledge_base(schema: dict) -> dict:
@@ -19,9 +59,9 @@ def build_knowledge_base(schema: dict) -> dict:
     }
 
 def is_ollama_running() -> bool:
-    """Check if Ollama server is running at localhost:11434"""
+    """Check if Ollama server is running at 127.0.0.1:11434"""
     try:
-        response = requests.get("http://localhost:11434", timeout=2)
+        response = requests.get("http://127.0.0.1:11434", timeout=2)
         return response.status_code == 200
     except Exception:
         return False
@@ -31,7 +71,7 @@ def local_classify(col_name: str) -> str:
     logger = logging.getLogger(__name__)
     # Check if Ollama is running
     if not is_ollama_running():
-        logger.warning("Ollama not reachable at localhost:11434")
+        logger.warning("Ollama not reachable at 127.0.0.1:11434")
     
     prompt = (
         f"Classify the database column '{col_name}' into one word from: "
@@ -41,9 +81,9 @@ def local_classify(col_name: str) -> str:
 
     try:
         response = requests.post(
-            "http://localhost:11434/api/generate",
+            "http://127.0.0.1:11434/api/generate",
             json={
-                "model": "llama3",
+                "model": "deepseek-coder",
                 "prompt": prompt,
                 "stream": False
             },
@@ -58,10 +98,7 @@ def local_classify(col_name: str) -> str:
     except Exception:
         logger.warning(f"Local classification failed for '{col_name}'")
 
-    return "unknown"
-
-
-def openai_classify(col_name: str) -> str:
+    return _normalize(col_name)  # fallback to column name, never "unknown"
     """Classify a column name using OpenAI API with caching."""
     logger = logging.getLogger(__name__)
     # Check cache first
@@ -103,8 +140,8 @@ def openai_classify(col_name: str) -> str:
     except Exception:
         pass
 
-    _ai_cache[col_name] = "unknown"
-    return "unknown"
+    _ai_cache[col_name] = _normalize(col_name)
+    return _normalize(col_name)
 
 
 def classify_column(col_name: str, provider: str) -> str:
@@ -119,7 +156,7 @@ def classify_column(col_name: str, provider: str) -> str:
             return openai_classify(col_name)
         return result
     else:
-        return "unknown"
+        return _normalize(col_name)  # fallback to column name
 
 
 def batch_local_classify(col_names: list[str], schema: dict | None = None) -> dict[str, str]:
@@ -137,9 +174,9 @@ def batch_local_classify(col_names: list[str], schema: dict | None = None) -> di
 
     try:
         response = requests.post(
-            "http://localhost:11434/api/generate",
+            "http://127.0.0.1:11434/api/generate",
             json={
-                "model": "llama3",
+                "model": "deepseek-coder",
                 "prompt": prompt,
                 "stream": False
             },
@@ -152,13 +189,13 @@ def batch_local_classify(col_names: list[str], schema: dict | None = None) -> di
         parsed = json.loads(text)
 
         return {
-            col: val.lower() if val and val.isalnum() else "unknown"
+            col: val.lower() if val and val.isalnum() else _normalize(col)
             for col, val in parsed.items()
             if col in col_names
         }
 
     except Exception:
-        return {col: "unknown" for col in col_names}
+        return {col: _normalize(col) for col in col_names}  # fallback to column names
 
 
 def batch_openai_classify(col_names: list[str], schema: dict | None = None) -> dict[str, str]:
@@ -197,13 +234,13 @@ def batch_openai_classify(col_names: list[str], schema: dict | None = None) -> d
         parsed = json.loads(text)
 
         return {
-            col: val.lower() if val and val.isalnum() else "unknown"
+            col: val.lower() if val and val.isalnum() else _normalize(col)
             for col, val in parsed.items()
             if col in col_names
         }
 
     except Exception:
-        return {col: "unknown" for col in col_names}
+        return {col: _normalize(col) for col in col_names}  # fallback to column names
 
 
 def batch_classify_columns(col_names: list[str], provider: str, schema: dict | None = None) -> dict[str, str]:
@@ -224,7 +261,7 @@ def batch_classify_columns(col_names: list[str], provider: str, schema: dict | N
 
         return results
     else:
-        return {col: "unknown" for col in col_names}
+        return {col: _normalize(col) for col in col_names}  # fallback to column names
 
 
 def ai_refine(semantic_layer: dict[str, dict[str, dict]], provider: str = "local", schema: dict | None = None) -> dict[str, dict[str, dict]]:
@@ -245,7 +282,13 @@ def ai_refine(semantic_layer: dict[str, dict[str, dict]], provider: str = "local
     for table, columns in semantic_layer.items():
         for col in columns:
             key = f"{table}.{col}"
-            refined = results.get(key, results.get(col, "unknown"))
+            refined = results.get(col) or results.get(key)
+            # Strip accidental table prefix (e.g. "events.id" → "id")
+            if refined and "." in refined:
+                refined = refined.split(".")[-1]
+            # Never store empty or "unknown" — fall back to normalized column name
+            if not refined or refined == "unknown":
+                refined = _normalize(col)
             semantic_layer[table][col] = {
                 "term": refined,
                 "source": "ai",

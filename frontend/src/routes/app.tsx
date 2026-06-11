@@ -1,6 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
-import {
+import { useEffect, useMemo, useRef, useState } from "react";import {
   MessageSquare, History, Database, Settings, Plus, Send, Mic, Copy, Bookmark,
   Check, ChevronDown, ChevronRight, Sparkles, Table as TableIcon, BarChart3,
   Braces, Sun, Moon, Clock, Rows, CircleDot, Loader2, AlertCircle, X,
@@ -27,8 +26,65 @@ import { cn } from "@/lib/utils";
 import { SemanticGroup, type SemanticColumn } from "@/components/SemanticGroup";
 
 export const Route = createFileRoute("/app")({
-  component: DBBuddyApp,
+  component: AppShell,
 });
+
+// Render nothing on the server — the app is fully client-driven with no SSR
+// value. This eliminates all hydration mismatches from state-dependent props
+// (disabled, placeholder, title) that differ between server and client.
+function AppShell() {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+  if (!mounted) return <AppLoadingSkeleton />;
+  return <DBBuddyApp />;
+}
+
+// Matches the app's two-panel layout so there's no layout shift on mount.
+function AppLoadingSkeleton() {
+  return (
+    <div className="flex h-screen w-full overflow-hidden bg-background">
+      {/* Sidebar skeleton */}
+      <aside className="hidden w-72 shrink-0 flex-col gap-4 border-r border-border bg-sidebar px-5 py-5 md:flex">
+        <div className="flex items-center gap-3">
+          <div className="h-9 w-9 rounded-xl bg-card animate-pulse" />
+          <div className="flex flex-col gap-1.5">
+            <div className="h-3.5 w-24 rounded bg-card animate-pulse" />
+            <div className="h-2.5 w-32 rounded bg-card animate-pulse" />
+          </div>
+        </div>
+        <div className="h-9 w-full rounded-lg bg-card animate-pulse" />
+        <div className="flex flex-col gap-2 mt-2">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="h-8 w-full rounded-lg bg-card animate-pulse" />
+          ))}
+        </div>
+      </aside>
+      {/* Main area skeleton */}
+      <main className="flex flex-1 flex-col">
+        <div className="flex items-center justify-between border-b border-border px-8 py-3">
+          <div className="flex flex-col gap-1.5">
+            <div className="h-4 w-48 rounded bg-card animate-pulse" />
+            <div className="h-3 w-32 rounded bg-card animate-pulse" />
+          </div>
+          <div className="flex gap-2">
+            <div className="h-8 w-24 rounded-md bg-card animate-pulse" />
+            <div className="h-8 w-32 rounded-md bg-card animate-pulse" />
+          </div>
+        </div>
+        <div className="flex flex-1 items-center justify-center">
+          <div className="flex flex-col items-center gap-4">
+            <div className="h-16 w-16 rounded-2xl bg-card animate-pulse" />
+            <div className="h-4 w-48 rounded bg-card animate-pulse" />
+            <div className="h-3 w-64 rounded bg-card animate-pulse" />
+          </div>
+        </div>
+        <div className="border-t border-border px-8 py-4">
+          <div className="h-14 w-full rounded-2xl bg-card animate-pulse" />
+        </div>
+      </main>
+    </div>
+  );
+}
 
 // ---------- Types ----------
 type DBStatus = "connected" | "disconnected";
@@ -98,9 +154,17 @@ function DBBuddyApp() {
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Derive query history from real messages
+  // Derive query history from real messages — deduplicated, most recent first
   const queryHistory = useMemo(
-    () => messages.filter((m) => m.role === "user").map((m) => m.text).slice(-10).reverse(),
+    () => [
+      ...new Map(
+        messages
+          .filter((m) => m.role === "user")
+          .map((m) => [m.text, m.text])
+      ).values(),
+    ]
+      .slice(-10)
+      .reverse(),
     [messages],
   );
 
@@ -153,7 +217,7 @@ function DBBuddyApp() {
 
     try {
       const startMs = Date.now();
-      const res = await fetch("http://localhost:8000/query", {
+      const res = await fetch("http://127.0.0.1:8000/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -255,7 +319,7 @@ function DBBuddyApp() {
     setAnalysisError(null);
 
     try {
-      const res = await fetch("http://localhost:8000/analyze", {
+      const res = await fetch("http://127.0.0.1:8000/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -360,12 +424,14 @@ function DBBuddyApp() {
               setValue={setInput}
               onSend={() => ask(input)}
               sending={sending}
+              hasDb={!!activeDbObj}
             />
           </div>
 
           {/* Right panel */}
           <RightPanel
             result={lastAssistant?.result}
+            resultMessageId={lastAssistant?.id}
             analysisResult={analysisResult}
             analysisError={analysisError}
             hasConnectedDb={databases.some((db) => db.status === "connected")}
@@ -563,8 +629,8 @@ function TopBar({ activeDb, databases, setActiveDb, onNewChat, onAnalyze, analys
           size="sm"
           className="gap-1.5 brand-gradient text-primary-foreground"
           onClick={onAnalyze}
-          disabled={analysisLoading || !hasDb}
-          title={!hasDb ? "Connect a database first" : undefined}
+          disabled={!!(analysisLoading || !hasDb)}
+          title={!hasDb ? "Connect a database first" : ""}
         >
           {analysisLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
           {analysisLoading ? "Analyzing…" : "Analyze Schema"}
@@ -755,9 +821,9 @@ function AssistantBubble({
                 Semantic interpretation
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {message.result.semantic.map((s) => (
+                {message.result.semantic.map((s, si) => (
                   <span
-                    key={s.from}
+                    key={`${message.id}-${si}-${s.from}-${s.to}`}
                     className="inline-flex items-center gap-1 rounded-md border border-border bg-background/50 px-2 py-0.5 font-mono text-[10.5px]"
                   >
                     <span className="text-muted-foreground">{s.from}</span>
@@ -773,7 +839,7 @@ function AssistantBubble({
         <SQLBlock sql={message.sql} />
 
 
-        {message.result && <ResultsView result={message.result} />}
+        {message.result && <ResultsView result={message.result} messageId={message.id} />}
       </div>
     </div>
   );
@@ -849,7 +915,7 @@ function SQLBlock({ sql }: { sql: string }) {
 }
 
 // ---------- Results View ----------
-function ResultsView({ result }: { result: QueryResult }) {
+function ResultsView({ result, messageId }: { result: QueryResult; messageId: string }) {
   const [page, setPage] = useState(0);
   const pageSize = 10;
   const pages = Math.max(1, Math.ceil(result.rows.length / pageSize));
@@ -890,7 +956,7 @@ function ResultsView({ result }: { result: QueryResult }) {
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   {result.columns.map((c) => (
-                    <TableHead key={c} className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
+                    <TableHead key={`${messageId}-${c}`} className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
                       {c}
                     </TableHead>
                   ))}
@@ -957,12 +1023,15 @@ function ResultsView({ result }: { result: QueryResult }) {
 
 // ---------- Composer ----------
 function Composer({
-  value, setValue, onSend, sending,
-}: { value: string; setValue: (s: string) => void; onSend: () => void; sending: boolean }) {
+  value, setValue, onSend, sending, hasDb,
+}: { value: string; setValue: (s: string) => void; onSend: () => void; sending: boolean; hasDb: boolean }) {
   return (
     <div className="border-t border-border/60 bg-background/80 px-4 sm:px-8 py-4 backdrop-blur">
       <div className="mx-auto max-w-4xl">
-        <div className="group relative rounded-2xl border border-border bg-card shadow-[var(--shadow-soft)] transition-colors focus-within:border-primary/60">
+        <div className={cn(
+          "group relative rounded-2xl border bg-card shadow-[var(--shadow-soft)] transition-colors",
+          hasDb ? "border-border focus-within:border-primary/60" : "border-border/40 opacity-60",
+        )}>
           <Textarea
             value={value}
             onChange={(e) => setValue(e.target.value)}
@@ -973,17 +1042,18 @@ function Composer({
               }
             }}
             rows={1}
-            placeholder="Ask your database (e.g., 'total sales last month')"
-            className="min-h-[56px] resize-none border-0 bg-transparent px-4 py-4 pr-28 text-sm shadow-none focus-visible:ring-0"
+            disabled={!!(!hasDb)}
+            placeholder={hasDb ? "Ask your database (e.g., 'total sales last month')" : "Connect a database to start asking questions…"}
+            className="min-h-[56px] resize-none border-0 bg-transparent px-4 py-4 pr-28 text-sm shadow-none focus-visible:ring-0 disabled:cursor-not-allowed"
           />
           <div className="absolute bottom-2 right-2 flex items-center gap-1">
-            <Button size="icon" variant="ghost" className="h-9 w-9 rounded-full text-muted-foreground" aria-label="Voice (coming soon)" disabled>
+            <Button size="icon" variant="ghost" className="h-9 w-9 rounded-full text-muted-foreground" aria-label="Voice (coming soon)" disabled={true}>
               <Mic className="h-4 w-4" />
             </Button>
             <Button
               size="icon"
               onClick={onSend}
-              disabled={sending || !value.trim()}
+              disabled={!!(sending || !value.trim() || !hasDb)}
               className="h-9 w-9 rounded-full brand-gradient text-primary-foreground hover:opacity-90 disabled:opacity-40"
               aria-label="Send"
             >
@@ -1002,12 +1072,14 @@ function Composer({
 // ---------- Right panel ----------
 function RightPanel({
   result,
+  resultMessageId,
   analysisResult,
   analysisError,
   hasConnectedDb,
   onConnect,
 }: {
   result?: QueryResult;
+  resultMessageId?: string;
   analysisResult?: SemanticAnalysisResult | null;
   analysisError?: string | null;
   hasConnectedDb: boolean;
@@ -1020,12 +1092,13 @@ function RightPanel({
 
     const groupedMap: Record<string, SemanticColumn[]> = {};
 
-    Object.entries(analysisResult.semantic_layer).forEach(([, columns]) => {
+    Object.entries(analysisResult.semantic_layer).forEach(([tableName, columns]) => {
       Object.entries(columns).forEach(([column, entry]) => {
         const term = entry.term || "Unknown";
         if (!groupedMap[term]) groupedMap[term] = [];
         groupedMap[term].push({
           column,
+          table: tableName,
           source: entry.source,
           provider: entry.provider,
           plugin: entry.plugin,
@@ -1149,9 +1222,9 @@ function RightPanel({
               Semantic interpretation
             </div>
             <div className="flex flex-col gap-1.5">
-              {result.semantic.map((s) => (
+              {result.semantic.map((s, si) => (
                 <div
-                  key={s.from}
+                  key={`${resultMessageId ?? `rp-sem-${si}`}-${si}-${s.from}-${s.to}`}
                   className="flex items-center justify-between rounded-md border border-border bg-background/50 px-3 py-2 font-mono text-xs"
                 >
                   <span className="text-muted-foreground">{s.from}</span>
@@ -1167,8 +1240,8 @@ function RightPanel({
               Columns
             </div>
             <div className="flex flex-wrap gap-1.5">
-              {result.columns.map((c) => (
-                <span key={c} className="rounded-md border border-border bg-background/50 px-2 py-1 font-mono text-[11px]">
+              {result.columns.map((c, ci) => (
+                <span key={`${resultMessageId ?? `rp-col-${ci}`}-${ci}-${c}`} className="rounded-md border border-border bg-background/50 px-2 py-1 font-mono text-[11px]">
                   {c}
                 </span>
               ))}
@@ -1222,7 +1295,7 @@ function ConnectDatabaseModal({
 }: { open: boolean; onOpenChange: (b: boolean) => void; onAdd: (db: DB) => void }) {
   const [name, setName] = useState("");
   const [engine, setEngine] = useState("PostgreSQL");
-  const [host, setHost] = useState("localhost");
+  const [host, setHost] = useState("127.0.0.1");
   const [user, setUser] = useState("root");
   const [password, setPassword] = useState("");
   const [database, setDatabase] = useState("testdb");

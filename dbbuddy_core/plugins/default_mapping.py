@@ -1,5 +1,6 @@
 """Default mapping plugin with hardcoded semantic rules"""
 from dbbuddy_core.plugins.base import MappingPlugin
+from dbbuddy_core.ai import _normalize
 
 
 class Plugin(MappingPlugin):
@@ -40,4 +41,4 @@ class Plugin(MappingPlugin):
         if matches:
             return matches[0][1]
         
-        return "unknown"
+        return _normalize(column_name)  # fallback to normalized column name
