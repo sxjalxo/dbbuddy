@@ -2,8 +2,6 @@
 
 An AI-powered semantic database interface. Ask questions in plain English, get SQL grounded in your actual schema, and receive results with the reasoning behind them.
 
-> **Screenshot / demo GIF** — drop a `docs/demo.gif` here once recorded. Even 10 seconds (question → SQL → results) multiplies repo impact instantly.
-
 ## Key highlights
 
 - 🧠 **Semantic-layer grounded SQL** — every query is built against a structured understanding of your schema, not raw column names
