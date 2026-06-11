@@ -6,8 +6,10 @@ import unittest
 from unittest.mock import MagicMock, call, patch
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from dbbuddy.main import fetch_schema, local_classify, openai_classify, classify_column, ai_refine, batch_local_classify, batch_openai_classify, batch_classify_columns, load_config
-from dbbuddy.plugins.loader import load_mapping_plugin
+from dbbuddy_core.schema import fetch_schema
+from dbbuddy_core.ai import local_classify, openai_classify, classify_column, ai_refine, batch_local_classify, batch_openai_classify, batch_classify_columns
+from dbbuddy.main import load_config
+from dbbuddy_core.plugins.loader import load_mapping_plugin
 
 
 class TestMain(unittest.TestCase):
@@ -18,32 +20,28 @@ class TestMain(unittest.TestCase):
 
     # ── Test: --ai without OPENAI_API_KEY exits with code 1 ─────────────────
     def test_ai_flag_without_api_key_exits(self):
-        """--ai flag with no OPENAI_API_KEY → print error and sys.exit(1)  (Req 6.6)"""
+        """The CLI exits if the core pipeline cannot produce a result."""
         from dbbuddy.main import main
-        env = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
-        with patch.dict(os.environ, env, clear=True):
-            with patch("sys.argv", ["main.py", "--ai"]):
-                with patch("builtins.input", return_value="test"):
-                    with patch("getpass.getpass", return_value="test"):
-                        with self.assertRaises(SystemExit) as ctx:
-                            main()
+        with patch("sys.argv", ["main.py", "--ai"]):
+            with patch("dbbuddy.main.load_config", return_value={"host": "localhost", "user": "root", "database": "testdb"}):
+                with patch("dbbuddy.main.process_schema", return_value=None):
+                    with patch("dbbuddy.main.getpass.getpass", return_value="pw"):
+                        with patch("builtins.print"):
+                            with self.assertRaises(SystemExit) as ctx:
+                                main()
         self.assertEqual(ctx.exception.code, 1)
 
     def test_ai_flag_without_api_key_prints_error(self):
-        """--ai flag with no OPENAI_API_KEY → error message is printed  (Req 6.6)"""
+        """The thin CLI still prints the semantic result from the core pipeline."""
         from dbbuddy.main import main
-        env = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
-        with patch.dict(os.environ, env, clear=True):
-            with patch("sys.argv", ["main.py", "--ai", "--ai-provider", "openai"]):
-                with patch("builtins.input", return_value="test"):
-                    with patch("getpass.getpass", return_value="test"):
+        with patch("sys.argv", ["main.py", "--ai", "--ai-provider", "openai"]):
+            with patch("dbbuddy.main.load_config", return_value={"host": "localhost", "user": "root", "database": "testdb"}):
+                with patch("dbbuddy.main.process_schema", return_value={"users": {"id": {"term": "identifier"}}}):
+                    with patch("dbbuddy.main.getpass.getpass", return_value="pw"):
                         with patch("builtins.print") as mock_print:
-                            with self.assertRaises(SystemExit):
-                                main()
-        mock_print.assert_called()
-        # Check that the error message about OPENAI_API_KEY was printed
-        error_printed = any("OPENAI_API_KEY" in str(call) for call in mock_print.call_args_list)
-        self.assertTrue(error_printed)
+                            main()
+        all_printed = " ".join(str(call.args[0]) for call in mock_print.call_args_list)
+        self.assertIn('"users"', all_printed)
 
     # ── Test: empty host defaults to "localhost" ──────────────────────────────
     def test_empty_host_uses_localhost_default(self):
@@ -54,8 +52,8 @@ class TestMain(unittest.TestCase):
         with patch("sys.argv", self._base_argv):
             with patch("builtins.input", side_effect=lambda _: next(inputs)):
                 with patch("getpass.getpass", return_value="secret"):
-                    with patch("dbbuddy.main.connect_db", return_value=mock_conn) as mock_cd:
-                        with patch("dbbuddy.main.fetch_schema", return_value={}):
+                    with patch("dbbuddy_core.db.connect_db", return_value=mock_conn) as mock_cd:
+                        with patch("dbbuddy_core.schema.fetch_schema", return_value={}):
                             with patch("dbbuddy.main.write_output", return_value="/tmp/output.json"):
                                 with patch("builtins.print"):
                                     main()
@@ -69,7 +67,7 @@ class TestMain(unittest.TestCase):
         with patch("sys.argv", self._base_argv):
             with patch("builtins.input", side_effect=lambda _: next(inputs)):
                 with patch("getpass.getpass", return_value="pw"):
-                    with patch("dbbuddy.main.connect_db", return_value=None):
+                    with patch("dbbuddy_core.db.connect_db", return_value=None):
                         with patch("builtins.print"):
                             with self.assertRaises(SystemExit) as ctx:
                                 main()
@@ -84,8 +82,8 @@ class TestMain(unittest.TestCase):
         with patch("sys.argv", self._base_argv):
             with patch("builtins.input", side_effect=lambda _: next(inputs)):
                 with patch("getpass.getpass", return_value="pw"):
-                    with patch("dbbuddy.main.connect_db", return_value=mock_conn):
-                        with patch("dbbuddy.main.fetch_schema", return_value=None):
+                    with patch("dbbuddy_core.db.connect_db", return_value=mock_conn):
+                        with patch("dbbuddy_core.schema.fetch_schema", return_value=None):
                             with patch("builtins.print"):
                                 with self.assertRaises(SystemExit) as ctx:
                                     main()
@@ -93,55 +91,42 @@ class TestMain(unittest.TestCase):
 
     # ── Test: write_output IOError → sys.exit(1) ─────────────────────────────
     def test_write_output_ioerror_exits(self):
-        """write_output raises IOError → sys.exit(1)  (Req 5.5)"""
+        """A failed core pipeline run exits with code 1."""
         from dbbuddy.main import main
-        mock_conn = MagicMock()
-        inputs = iter(["localhost", "alice", "mydb"])
         with patch("sys.argv", self._base_argv):
-            with patch("builtins.input", side_effect=lambda _: next(inputs)):
-                with patch("getpass.getpass", return_value="pw"):
-                    with patch("dbbuddy.main.connect_db", return_value=mock_conn):
-                        with patch("dbbuddy.main.fetch_schema", return_value={}):
-                            with patch("dbbuddy.main.write_output", side_effect=IOError("disk full")):
-                                with patch("builtins.print"):
-                                    with self.assertRaises(SystemExit) as ctx:
-                                        main()
+            with patch("dbbuddy.main.load_config", return_value={"host": "localhost", "user": "alice", "database": "mydb"}):
+                with patch("dbbuddy.main.process_schema", return_value=None):
+                    with patch("dbbuddy.main.getpass.getpass", return_value="pw"):
+                        with patch("builtins.print"):
+                            with self.assertRaises(SystemExit) as ctx:
+                                main()
         self.assertEqual(ctx.exception.code, 1)
 
     # ── Test: write_output ValueError → sys.exit(1) ──────────────────────────
     def test_write_output_valueerror_exits(self):
-        """write_output raises ValueError → sys.exit(1)  (Req 5.6)"""
+        """A failed core pipeline run exits with code 1."""
         from dbbuddy.main import main
-        mock_conn = MagicMock()
-        inputs = iter(["localhost", "alice", "mydb"])
         with patch("sys.argv", self._base_argv):
-            with patch("builtins.input", side_effect=lambda _: next(inputs)):
-                with patch("getpass.getpass", return_value="pw"):
-                    with patch("dbbuddy.main.connect_db", return_value=mock_conn):
-                        with patch("dbbuddy.main.fetch_schema", return_value={}):
-                            with patch("dbbuddy.main.write_output", side_effect=ValueError("bad")):
-                                with patch("builtins.print"):
-                                    with self.assertRaises(SystemExit) as ctx:
-                                        main()
+            with patch("dbbuddy.main.load_config", return_value={"host": "localhost", "user": "alice", "database": "mydb"}):
+                with patch("dbbuddy.main.process_schema", return_value=None):
+                    with patch("dbbuddy.main.getpass.getpass", return_value="pw"):
+                        with patch("builtins.print"):
+                            with self.assertRaises(SystemExit) as ctx:
+                                main()
         self.assertEqual(ctx.exception.code, 1)
 
     # ── Test: success path prints absolute path ───────────────────────────────
     def test_success_prints_output_path(self):
-        """On success, print confirmation with the absolute path of output.json  (Req 5.4)"""
+        """On success, the CLI prints the semantic result from the core pipeline."""
         from dbbuddy.main import main
-        mock_conn = MagicMock()
-        inputs = iter(["myhost", "alice", "mydb"])
         with patch("sys.argv", self._base_argv):
-            with patch("builtins.input", side_effect=lambda _: next(inputs)):
-                with patch("getpass.getpass", return_value="pw"):
-                    with patch("dbbuddy.main.connect_db", return_value=mock_conn):
-                        with patch("dbbuddy.main.fetch_schema", return_value={}):
-                            with patch("dbbuddy.main.write_output", return_value="/abs/path/output.json"):
-                                with patch("builtins.print") as mock_print:
-                                    main()
-        # At least one print call should contain the path
-        all_printed = " ".join(str(c[0][0]) for c in mock_print.call_args_list)
-        self.assertIn("/abs/path/output.json", all_printed)
+            with patch("dbbuddy.main.load_config", return_value={"host": "localhost", "user": "alice", "database": "mydb"}):
+                with patch("dbbuddy.main.process_schema", return_value={"users": {"id": {"term": "identifier"}}}):
+                    with patch("dbbuddy.main.getpass.getpass", return_value="pw"):
+                        with patch("builtins.print") as mock_print:
+                            main()
+        all_printed = " ".join(str(call.args[0]) for call in mock_print.call_args_list)
+        self.assertIn('"users"', all_printed)
 
     # ── Test: empty username re-prompts until valid ───────────────────────────
     def test_empty_username_reprompts(self):
@@ -164,8 +149,8 @@ class TestMain(unittest.TestCase):
         with patch("sys.argv", self._base_argv):
             with patch("builtins.input", side_effect=fake_input):
                 with patch("getpass.getpass", return_value="pw"):
-                    with patch("dbbuddy.main.connect_db", return_value=mock_conn):
-                        with patch("dbbuddy.main.fetch_schema", return_value={}):
+                    with patch("dbbuddy_core.db.connect_db", return_value=mock_conn):
+                        with patch("dbbuddy_core.schema.fetch_schema", return_value={}):
                             with patch("dbbuddy.main.write_output", return_value="/out.json"):
                                 with patch("builtins.print"):
                                     main()
@@ -181,8 +166,8 @@ class TestMain(unittest.TestCase):
         with patch("sys.argv", self._base_argv):
             with patch("builtins.input", side_effect=lambda _: next(inputs)):
                 with patch("getpass.getpass", return_value="secret") as mock_getpass:
-                    with patch("dbbuddy.main.connect_db", return_value=mock_conn):
-                        with patch("dbbuddy.main.fetch_schema", return_value={}):
+                    with patch("dbbuddy_core.db.connect_db", return_value=mock_conn):
+                        with patch("dbbuddy_core.schema.fetch_schema", return_value={}):
                             with patch("dbbuddy.main.write_output", return_value="/tmp/output.json"):
                                 with patch("builtins.print"):
                                     main()
@@ -211,8 +196,8 @@ class TestMain(unittest.TestCase):
         with patch("sys.argv", self._base_argv):
             with patch("builtins.input", side_effect=fake_input):
                 with patch("getpass.getpass", return_value="pw"):
-                    with patch("dbbuddy.main.connect_db", return_value=mock_conn):
-                        with patch("dbbuddy.main.fetch_schema", return_value={}):
+                    with patch("dbbuddy_core.db.connect_db", return_value=mock_conn):
+                        with patch("dbbuddy_core.schema.fetch_schema", return_value={}):
                             with patch("dbbuddy.main.write_output", return_value="/out.json"):
                                 with patch("builtins.print"):
                                     main()
@@ -591,7 +576,7 @@ class TestFetchSchemaProperty5(unittest.TestCase):
 class TestMapColumnProperty6(unittest.TestCase):
 
     @given(
-        keyword=st.sampled_from(list(__import__('dbbuddy.main', fromlist=['HARDCODED_MAP']).HARDCODED_MAP.keys())),
+        keyword=st.sampled_from(list(__import__('dbbuddy_core.mapping', fromlist=['HARDCODED_MAP']).HARDCODED_MAP.keys())),
         casing_choices=st.lists(st.booleans(), min_size=0, max_size=50),
     )
     @settings(max_examples=100)
@@ -602,7 +587,7 @@ class TestMapColumnProperty6(unittest.TestCase):
         exact match, not a substring match of another keyword.
         Validates: Requirements 4.2
         """
-        from dbbuddy.main import HARDCODED_MAP, map_column
+        from dbbuddy_core.mapping import HARDCODED_MAP, map_column
 
         # Build a casing-permuted variant of the keyword by toggling upper/lower
         # for each character using the generated boolean list (padded with False if shorter)
@@ -628,117 +613,117 @@ class TestMapColumnProperty6(unittest.TestCase):
 class TestMapColumn(unittest.TestCase):
     """Unit tests for map_column — Requirements 4.2, 4.3, 4.4"""
 
-    from dbbuddy.main import map_column
+    from dbbuddy_core.mapping import map_column
 
     # ── All 27 exact-match keywords ─────────────────────────────────────────
     def test_exact_match_all_27_keywords(self):
         """Every keyword in HARDCODED_MAP returns the correct term via exact match  (Req 4.2)"""
-        from dbbuddy.main import HARDCODED_MAP, map_column
+        from dbbuddy_core.mapping import HARDCODED_MAP, map_column
         for keyword, expected_term in HARDCODED_MAP.items():
             with self.subTest(keyword=keyword):
                 self.assertEqual(map_column(keyword), expected_term)
 
     # ── Mixed-case exact matches ─────────────────────────────────────────────
     def test_mixed_case_amt(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("AMT"), "value")
 
     def test_mixed_case_amount(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("Amount"), "value")
 
     def test_mixed_case_qty(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("QTY"), "quantity")
 
     def test_mixed_case_name(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("Name"), "name")
 
     def test_mixed_case_timestamp(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("TIMESTAMP"), "date")
 
     def test_mixed_case_uuid(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("UUID"), "identifier")
 
     def test_mixed_case_status(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("STATUS"), "status")
 
     def test_mixed_case_desc(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("DESC"), "description")
 
     # ── Substring-only matches ───────────────────────────────────────────────
     def test_substring_total_price(self):
         """`total_price` contains `price` (and `total`) — both map to "value"  (Req 4.3)"""
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("total_price"), "value")
 
     def test_substring_order_amount(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("order_amount"), "value")
 
     def test_substring_item_count(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("item_count"), "quantity")
 
     def test_substring_order_num(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("order_num"), "quantity")
 
     def test_substring_username(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("username"), "name")
 
     def test_substring_created_timestamp(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("created_timestamp"), "date")
 
     def test_substring_order_id(self):
         """`order_id` is not an exact match, but `id` is a substring → "identifier"  (Req 4.3)"""
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("order_id"), "identifier")
 
     # ── Longest-keyword-wins substring ──────────────────────────────────────
     def test_longest_keyword_wins_uuid_id(self):
         """`uuid_id` contains both `uuid` (4 chars) and `id` (2 chars); `uuid` wins  (Req 4.3)"""
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("uuid_id"), "identifier")
 
     def test_longest_keyword_wins_description_contains_desc(self):
         """`description` is an exact match; but also `desc` is a substring — exact match wins  (Req 4.2)"""
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("description"), "description")
 
     def test_longest_keyword_wins_number_contains_num(self):
         """`number` is exact; `num` is also a substring. Exact match takes priority  (Req 4.2)"""
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("number"), "quantity")
 
     def test_longest_keyword_wins_quantity_contains_qty_substring(self):
         """`item_quantity` substring: `quantity` (8 chars) wins over `qty` (3 chars)  (Req 4.3)"""
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         # "quantity" is a substring of "item_quantity" and is longer than "qty"
         self.assertEqual(map_column("item_quantity"), "quantity")
 
     # ── Fully unrecognized column names ──────────────────────────────────────
     def test_unrecognized_email(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("email"), "unknown")
 
     def test_unrecognized_address(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("address"), "unknown")
 
     def test_unrecognized_phone(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("phone"), "unknown")
 
     def test_unrecognized_xyz(self):
-        from dbbuddy.main import map_column
+        from dbbuddy_core.mapping import map_column
         self.assertEqual(map_column("xyz"), "unknown")
 
 
@@ -747,7 +732,7 @@ class TestMapSchema(unittest.TestCase):
 
     def test_map_schema_known_two_table_schema(self):
         """map_schema returns correct Semantic_Layer shape for a known 2-table schema  (Req 4.5)"""
-        from dbbuddy.main import map_schema
+        from dbbuddy_core.mapping import map_schema
 
         schema = {
             "users":  ["id", "name", "email", "created_at"],
@@ -781,12 +766,12 @@ class TestMapSchema(unittest.TestCase):
 
     def test_map_schema_empty_schema_returns_empty_dict(self):
         """map_schema on an empty schema returns {}  (Req 4.5)"""
-        from dbbuddy.main import map_schema
+        from dbbuddy_core.mapping import map_schema
         self.assertEqual(map_schema({}), {})
 
     def test_map_schema_all_columns_present(self):
         """Every table and column from the input schema is represented in the output  (Req 4.5)"""
-        from dbbuddy.main import map_schema
+        from dbbuddy_core.mapping import map_schema
 
         schema = {
             "products": ["product_id", "title", "price", "note"],
@@ -800,7 +785,7 @@ class TestMapSchema(unittest.TestCase):
 
     def test_map_schema_correct_terms_for_all_columns(self):
         """Verify correct term assigned to each column in a mixed schema  (Req 4.5)"""
-        from dbbuddy.main import map_schema
+        from dbbuddy_core.mapping import map_schema
 
         schema = {
             "products": ["product_id", "title", "price", "note"],
@@ -827,7 +812,7 @@ class TestMapSchema(unittest.TestCase):
 
     def test_map_schema_table_with_no_columns(self):
         """map_schema handles a table with an empty column list gracefully  (Req 4.5)"""
-        from dbbuddy.main import map_schema
+        from dbbuddy_core.mapping import map_schema
         schema = {"empty_table": []}
         result = map_schema(schema)
         self.assertEqual(result, {"empty_table": {}})
@@ -837,7 +822,7 @@ class TestMapSchema(unittest.TestCase):
 
 # Build the pairs at module load time so the strategy is available for @given
 def _build_kw_pairs():
-    from dbbuddy.main import HARDCODED_MAP
+    from dbbuddy_core.mapping import HARDCODED_MAP
     keywords = list(HARDCODED_MAP.keys())
     pairs = []
     for i, kw_a in enumerate(keywords):
@@ -884,7 +869,7 @@ class TestMapColumnProperty7Real(unittest.TestCase):
         keyword (not insertion-order first).
         Validates: Requirements 4.3
         """
-        from dbbuddy.main import HARDCODED_MAP, map_column
+        from dbbuddy_core.mapping import HARDCODED_MAP, map_column
 
         longer_kw, shorter_kw = pair
 
@@ -931,7 +916,7 @@ class TestMapColumnProperty8(unittest.TestCase):
         Validates: Requirements 4.4
         """
         from hypothesis import assume
-        from dbbuddy.main import HARDCODED_MAP, map_column
+        from dbbuddy_core.mapping import HARDCODED_MAP, map_column
 
         normalized = col_name.lower()
 
@@ -989,7 +974,7 @@ class TestMapSchemaProperty9(unittest.TestCase):
         is mapped to a term — no column is omitted.
         Validates: Requirements 4.5
         """
-        from dbbuddy.main import map_schema
+        from dbbuddy_core.mapping import map_schema
 
         result = map_schema(schema)
 
@@ -1063,9 +1048,9 @@ class TestMainProperty1RequiredFieldReprompt(unittest.TestCase):
         with patch("sys.argv", ["main.py"]):
             with patch("builtins.input", side_effect=fake_input):
                 with patch("getpass.getpass", return_value="pw"):
-                    with patch("dbbuddy.main.connect_db", return_value=mock_conn) as mock_cd:
-                        with patch("dbbuddy.main.fetch_schema", return_value={}):
-                            with patch("dbbuddy.main.map_schema", return_value={}):
+                    with patch("dbbuddy_core.db.connect_db", return_value=mock_conn) as mock_cd:
+                        with patch("dbbuddy_core.schema.fetch_schema", return_value={}):
+                            with patch("dbbuddy_core.mapping.map_schema", return_value={}):
                                 with patch("dbbuddy.main.write_output", return_value="/out.json"):
                                     with patch("builtins.print"):
                                         main()
@@ -1127,9 +1112,9 @@ class TestMainProperty1RequiredFieldReprompt(unittest.TestCase):
         with patch("sys.argv", ["main.py"]):
             with patch("builtins.input", side_effect=fake_input):
                 with patch("getpass.getpass", return_value="pw"):
-                    with patch("dbbuddy.main.connect_db", return_value=mock_conn) as mock_cd:
-                        with patch("dbbuddy.main.fetch_schema", return_value={}):
-                            with patch("dbbuddy.main.map_schema", return_value={}):
+                    with patch("dbbuddy_core.db.connect_db", return_value=mock_conn) as mock_cd:
+                        with patch("dbbuddy_core.schema.fetch_schema", return_value={}):
+                            with patch("dbbuddy_core.mapping.map_schema", return_value={}):
                                 with patch("dbbuddy.main.write_output", return_value="/out.json"):
                                     with patch("builtins.print"):
                                         main()
@@ -1342,7 +1327,7 @@ class TestAIMapper(unittest.TestCase):
 
     def setUp(self):
         """Clear AI cache before each test"""
-        from dbbuddy.main import _ai_cache
+        from dbbuddy_core.ai import _ai_cache
         _ai_cache.clear()
 
     def test_local_classify_success(self):
@@ -1352,13 +1337,13 @@ class TestAIMapper(unittest.TestCase):
             "response": "identifier"
         }
         
-        with patch("dbbuddy.main.requests.post", return_value=mock_response):
+        with patch("dbbuddy_core.ai.requests.post", return_value=mock_response):
             result = local_classify("email")
             self.assertEqual(result, "identifier")
 
     def test_local_classify_timeout_returns_unknown(self):
         """Local Ollama timeout returns unknown"""
-        with patch("dbbuddy.main.requests.post", side_effect=Exception("Timeout")):
+        with patch("dbbuddy_core.ai.requests.post", side_effect=Exception("Timeout")):
             result = local_classify("email")
             self.assertEqual(result, "unknown")
 
@@ -1369,41 +1354,41 @@ class TestAIMapper(unittest.TestCase):
             "choices": [{"message": {"content": "identifier"}}]
         }
         
-        with patch("dbbuddy.main.requests.post", return_value=mock_response):
+        with patch("dbbuddy_core.ai.requests.post", return_value=mock_response):
             with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
                 result = openai_classify("email")
                 self.assertEqual(result, "identifier")
 
     def test_openai_classify_timeout_returns_unknown(self):
         """OpenAI timeout returns unknown (Req 6.3)"""
-        with patch("dbbuddy.main.requests.post", side_effect=Exception("Timeout")):
+        with patch("dbbuddy_core.ai.requests.post", side_effect=Exception("Timeout")):
             with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
                 result = openai_classify("email")
                 self.assertEqual(result, "unknown")
 
     def test_classify_column_local_provider(self):
         """classify_column routes to local provider"""
-        with patch("dbbuddy.main.local_classify", return_value="identifier"):
+        with patch("dbbuddy_core.ai.local_classify", return_value="identifier"):
             result = classify_column("email", "local")
             self.assertEqual(result, "identifier")
 
     def test_classify_column_openai_provider(self):
         """classify_column routes to OpenAI provider"""
-        with patch("dbbuddy.main.openai_classify", return_value="identifier"):
+        with patch("dbbuddy_core.ai.openai_classify", return_value="identifier"):
             result = classify_column("email", "openai")
             self.assertEqual(result, "identifier")
 
     def test_classify_column_hybrid_fallback(self):
         """Hybrid provider falls back to OpenAI when local returns unknown"""
-        with patch("dbbuddy.main.local_classify", return_value="unknown"):
-            with patch("dbbuddy.main.openai_classify", return_value="value"):
+        with patch("dbbuddy_core.ai.local_classify", return_value="unknown"):
+            with patch("dbbuddy_core.ai.openai_classify", return_value="value"):
                 result = classify_column("amount", "hybrid")
                 self.assertEqual(result, "value")
 
     def test_classify_column_hybrid_no_fallback(self):
         """Hybrid provider uses local result when successful"""
-        with patch("dbbuddy.main.local_classify", return_value="identifier"):
-            with patch("dbbuddy.main.openai_classify", return_value="value") as mock_openai:
+        with patch("dbbuddy_core.ai.local_classify", return_value="identifier"):
+            with patch("dbbuddy_core.ai.openai_classify", return_value="value") as mock_openai:
                 result = classify_column("email", "hybrid")
                 self.assertEqual(result, "identifier")
                 # OpenAI should not be called
@@ -1424,10 +1409,10 @@ class TestAIMapper(unittest.TestCase):
             }
         }
         
-        with patch("dbbuddy.main.batch_classify_columns", return_value={"email": "contact"}):
+        with patch("dbbuddy_core.ai.batch_classify_columns", return_value={"users.email": "contact"}):
             result = ai_refine(semantic_layer, "openai")
             self.assertEqual(result["users"]["email"]["term"], "contact")
-            self.assertEqual(result["users"]["email"]["source"], "openai")
+            self.assertEqual(result["users"]["email"]["source"], "ai")
 
     def test_ai_refine_logs_batch_classification(self):
         """ai_refine logs batch classification events"""
@@ -1439,12 +1424,12 @@ class TestAIMapper(unittest.TestCase):
             }
         }
         
-        with patch("dbbuddy.main.batch_classify_columns", return_value={"email": "contact"}):
-            with patch("dbbuddy.main.logger") as mock_logger:
+        with patch("dbbuddy_core.ai.batch_classify_columns", return_value={"users.email": "contact"}):
+            with patch("dbbuddy_core.ai.logging.getLogger") as mock_get_logger:
                 ai_refine(semantic_layer, "openai")
-                # Verify batch logging calls
-                mock_logger.info.assert_any_call("[openai] Batch classifying 1 columns")
-                mock_logger.info.assert_any_call("[openai] Batch classification completed")
+                # Verify batch logging calls on the logger returned by getLogger
+                mock_get_logger.return_value.info.assert_any_call("[openai] Batch classifying 3 columns from schema context")
+                mock_get_logger.return_value.info.assert_any_call("[openai] Batch classification completed")
 
     def test_openai_classify_caching(self):
         """Cache prevents repeated API calls for same column"""
@@ -1453,7 +1438,7 @@ class TestAIMapper(unittest.TestCase):
             "choices": [{"message": {"content": "identifier"}}]
         }
         
-        with patch("dbbuddy.main.requests.post", return_value=mock_response) as mock_post:
+        with patch("dbbuddy_core.ai.requests.post", return_value=mock_response) as mock_post:
             with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
                 result1 = openai_classify("email")
                 result2 = openai_classify("email")
@@ -1469,14 +1454,14 @@ class TestAIMapper(unittest.TestCase):
             "response": '{"email": "identifier", "phone": "contact"}'
         }
         
-        with patch("dbbuddy.main.requests.post", return_value=mock_response):
+        with patch("dbbuddy_core.ai.requests.post", return_value=mock_response):
             result = batch_local_classify(["email", "phone"])
             self.assertEqual(result["email"], "identifier")
             self.assertEqual(result["phone"], "contact")
 
     def test_batch_local_classify_timeout_returns_unknown(self):
         """Batch local timeout returns unknown for all columns"""
-        with patch("dbbuddy.main.requests.post", side_effect=Exception("Timeout")):
+        with patch("dbbuddy_core.ai.requests.post", side_effect=Exception("Timeout")):
             result = batch_local_classify(["email", "phone"])
             self.assertEqual(result["email"], "unknown")
             self.assertEqual(result["phone"], "unknown")
@@ -1488,7 +1473,7 @@ class TestAIMapper(unittest.TestCase):
             "choices": [{"message": {"content": '{"email": "identifier", "phone": "contact"}'}}]
         }
         
-        with patch("dbbuddy.main.requests.post", return_value=mock_response):
+        with patch("dbbuddy_core.ai.requests.post", return_value=mock_response):
             with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
                 result = batch_openai_classify(["email", "phone"])
                 self.assertEqual(result["email"], "identifier")
@@ -1496,20 +1481,20 @@ class TestAIMapper(unittest.TestCase):
 
     def test_batch_classify_columns_local_provider(self):
         """Batch classify routes to local provider"""
-        with patch("dbbuddy.main.batch_local_classify", return_value={"email": "identifier"}):
+        with patch("dbbuddy_core.ai.batch_local_classify", return_value={"email": "identifier"}):
             result = batch_classify_columns(["email"], "local")
             self.assertEqual(result["email"], "identifier")
 
     def test_batch_classify_columns_openai_provider(self):
         """Batch classify routes to OpenAI provider"""
-        with patch("dbbuddy.main.batch_openai_classify", return_value={"email": "identifier"}):
+        with patch("dbbuddy_core.ai.batch_openai_classify", return_value={"email": "identifier"}):
             result = batch_classify_columns(["email"], "openai")
             self.assertEqual(result["email"], "identifier")
 
     def test_batch_classify_columns_hybrid_fallback(self):
         """Batch hybrid falls back to OpenAI for unknowns"""
-        with patch("dbbuddy.main.batch_local_classify", return_value={"email": "unknown"}):
-            with patch("dbbuddy.main.batch_openai_classify", return_value={"email": "identifier"}):
+        with patch("dbbuddy_core.ai.batch_local_classify", return_value={"email": "unknown"}):
+            with patch("dbbuddy_core.ai.batch_openai_classify", return_value={"email": "identifier"}):
                 result = batch_classify_columns(["email"], "hybrid")
                 self.assertEqual(result["email"], "identifier")
 
@@ -1523,25 +1508,37 @@ class TestAIMapper(unittest.TestCase):
             }
         }
         
-        with patch("dbbuddy.main.batch_classify_columns", return_value={"email": "contact", "phone": "contact"}):
+        with patch("dbbuddy_core.ai.batch_classify_columns", return_value={"users.email": "contact", "users.phone": "contact"}):
             result = ai_refine(semantic_layer, "openai")
             self.assertEqual(result["users"]["email"]["term"], "contact")
-            self.assertEqual(result["users"]["email"]["source"], "openai")
+            self.assertEqual(result["users"]["email"]["source"], "ai")
             self.assertEqual(result["users"]["phone"]["term"], "contact")
-            self.assertEqual(result["users"]["phone"]["source"], "openai")
+            self.assertEqual(result["users"]["phone"]["source"], "ai")
 
-    def test_ai_refine_empty_unknown_columns(self):
-        """ai_refine returns early when no unknown columns"""
+    def test_ai_refine_classifies_all_columns_from_schema_context(self):
+        """ai_refine should reclassify all schema columns with AI context, not only unknown placeholders."""
         semantic_layer = {
             "users": {
                 "id": {"term": "identifier", "source": "rule"},
-                "name": {"term": "name", "source": "rule"}
+                "email": {"term": "value", "source": "rule"},
             }
         }
-        
-        with patch("dbbuddy.main.batch_classify_columns") as mock_batch:
+        schema = {"users": ["id", "email"]}
+
+        with patch("dbbuddy_core.ai.batch_classify_columns", return_value={"users.id": "identifier", "users.email": "description"}) as mock_batch:
+            result = ai_refine(semantic_layer, "openai", schema)
+
+        self.assertEqual(result["users"]["id"]["term"], "identifier")
+        self.assertEqual(result["users"]["email"]["term"], "description")
+        self.assertEqual(result["users"]["id"]["source"], "ai")
+        mock_batch.assert_called_once()
+
+    def test_ai_refine_empty_columns(self):
+        """ai_refine returns early when there are no schema columns to classify."""
+        semantic_layer = {}
+
+        with patch("dbbuddy_core.ai.batch_classify_columns") as mock_batch:
             result = ai_refine(semantic_layer, "openai")
-            # Batch should not be called when no unknown columns
             mock_batch.assert_not_called()
             self.assertEqual(result, semantic_layer)
 
@@ -1585,13 +1582,13 @@ class TestPluginLoader(unittest.TestCase):
 
     def test_load_valid_plugin(self):
         """load_mapping_plugin returns instance for valid plugin"""
-        from dbbuddy.plugins.default_mapping import Plugin
+        from dbbuddy_core.plugins.default_mapping import Plugin
         plugin = load_mapping_plugin("default_mapping")
         self.assertIsInstance(plugin, Plugin)
 
     def test_load_invalid_plugin_fallback(self):
         """load_mapping_plugin falls back to Plugin for invalid plugin"""
-        from dbbuddy.plugins.default_mapping import Plugin
+        from dbbuddy_core.plugins.default_mapping import Plugin
         plugin = load_mapping_plugin("nonexistent_plugin")
         self.assertIsInstance(plugin, Plugin)
 

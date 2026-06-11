@@ -6,12 +6,12 @@ from unittest.mock import patch, MagicMock
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from dbbuddy.db import connect_db
+from dbbuddy_core.db import connect_db
 
 
 class TestConnectDb(unittest.TestCase):
 
-    @patch("dbbuddy.db.mysql.connector.connect")
+    @patch("dbbuddy_core.db.mysql.connector.connect")
     def test_successful_connection(self, mock_connect):
         """connect_db returns conn and prints success when is_connected() is True"""
         mock_conn = MagicMock()
@@ -25,7 +25,7 @@ class TestConnectDb(unittest.TestCase):
             host="localhost", user="user", password="pass", database="mydb"
         )
 
-    @patch("dbbuddy.db.mysql.connector.connect")
+    @patch("dbbuddy_core.db.mysql.connector.connect")
     def test_is_connected_false_returns_none(self, mock_connect):
         """connect_db returns None and prints error when is_connected() is False"""
         mock_conn = MagicMock()
@@ -36,7 +36,7 @@ class TestConnectDb(unittest.TestCase):
 
         self.assertIsNone(result)
 
-    @patch("dbbuddy.db.mysql.connector.connect")
+    @patch("dbbuddy_core.db.mysql.connector.connect")
     def test_exception_returns_none(self, mock_connect):
         """connect_db returns None and prints error message on exception"""
         mock_connect.side_effect = Exception("Access denied for user")
@@ -45,7 +45,7 @@ class TestConnectDb(unittest.TestCase):
 
         self.assertIsNone(result)
 
-    @patch("dbbuddy.db.mysql.connector.connect")
+    @patch("dbbuddy_core.db.mysql.connector.connect")
     def test_success_prints_success_message(self, mock_connect):
         """connect_db prints a success message when connection is established"""
         mock_conn = MagicMock()
@@ -57,7 +57,7 @@ class TestConnectDb(unittest.TestCase):
             printed = " ".join(str(a) for call in mock_print.call_args_list for a in call[0])
             self.assertIn("success", printed.lower())
 
-    @patch("dbbuddy.db.mysql.connector.connect")
+    @patch("dbbuddy_core.db.mysql.connector.connect")
     def test_is_connected_false_prints_error(self, mock_connect):
         """connect_db prints an error message when is_connected() returns False"""
         mock_conn = MagicMock()
@@ -69,7 +69,7 @@ class TestConnectDb(unittest.TestCase):
             printed = " ".join(str(a) for call in mock_print.call_args_list for a in call[0])
             self.assertTrue(len(printed) > 0)
 
-    @patch("dbbuddy.db.mysql.connector.connect")
+    @patch("dbbuddy_core.db.mysql.connector.connect")
     def test_exception_prints_failure_reason(self, mock_connect):
         """connect_db prints the exception message on failure"""
         mock_connect.side_effect = Exception("Unknown database 'mydb'")
@@ -84,7 +84,7 @@ class TestConnectDb(unittest.TestCase):
     # Validates: Requirements 2.4
     @given(message=st.text(min_size=1))
     @settings(max_examples=100)
-    @patch("dbbuddy.db.mysql.connector.connect")
+    @patch("dbbuddy_core.db.mysql.connector.connect")
     def test_property_exception_resilience(self, mock_connect, message):
         """Property 2: For any exception type/message, connect_db returns None
         and prints an error message that includes the failure reason."""
