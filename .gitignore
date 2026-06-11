@@ -73,3 +73,8 @@ Thumbs.db
 !.env.example
 *.pem
 *.key
+
+.agent/
+.devin/
+.kiro/
+.opencode/
