@@ -793,6 +793,45 @@ class TestQuerySafety:
         assert result["coverage"] < 0.2  # Low coverage
         assert result["relevant"] is True  # Should be accepted due to table match
 
+    def test_semantic_match_short_query(self):
+        """Test that semantic matches in short queries are accepted (intent queries)."""
+        from dbbuddy_core.pipeline import is_query_relevant
+        
+        semantic = {
+            "orders": {
+                "total_amount": {"term": "revenue"},
+                "status": {"term": "status"}
+            }
+        }
+        
+        # Short query with semantic term only
+        # "Show total revenue" - has "revenue" semantic match, no table/column match
+        result = is_query_relevant("Show total revenue", semantic)
+        
+        # Should be accepted due to semantic match in short query (<=5 tokens)
+        assert result["score"] >= 1.0  # Semantic match = 1.0
+        assert len(result["semantic_matches"]) >= 1  # Has semantic match
+        assert result["relevant"] is True  # Should be accepted due to semantic match
+
+    def test_semantic_match_long_query_rejected(self):
+        """Test that semantic matches in long queries without table/column are rejected."""
+        from dbbuddy_core.pipeline import is_query_relevant
+        
+        semantic = {
+            "orders": {
+                "total_amount": {"term": "revenue"},
+                "status": {"term": "status"}
+            }
+        }
+        
+        # Long query with semantic term only (no table/column)
+        # "Show me the total revenue for the last quarter please" - has "revenue" but long
+        result = is_query_relevant("Show me the total revenue for the last quarter please", semantic)
+        
+        # Should be rejected due to long query with only semantic match
+        assert len(result["semantic_matches"]) >= 1  # Has semantic match
+        assert result["relevant"] is False  # Should be rejected (long query, no table/column)
+
     def test_relevance_no_crash(self):
         """Test that relevance detection doesn't crash on basic queries."""
         from dbbuddy_core.pipeline import is_query_relevant

@@ -9,6 +9,8 @@ from dbbuddy_core.ai import ai_refine
 from dbbuddy_core.models import DBConfig
 from dbbuddy_core.query import _extract_identifiers, execute_query, fix_sql, fix_sql_with_ai, generate_sql, get_query_type, is_ollama_running, plan_intent, safe_execute, validate_against_schema
 
+logger = logging.getLogger(__name__)
+
 
 # Query categories for safety
 READ_QUERIES = {"select", "show", "describe", "explain"}
@@ -246,6 +248,18 @@ def is_query_relevant(query: str, semantic: dict) -> dict:
     query_lower = query.lower()
     tokens = re.findall(r'\b\w+\b', query_lower)
     
+    # 🔥 DEBUG: Log tokens and semantic structure
+    logger.debug(f"is_query_relevant - Query: {query}")
+    logger.debug(f"is_query_relevant - Tokens: {tokens}")
+    logger.debug(f"is_query_relevant - RAW semantic_layer: {semantic}")
+    
+    # 🔥 DEBUG: Log semantic layer details
+    logger.debug(f"is_query_relevant - Semantic layer keys (tables): {list(semantic.keys())}")
+    for table_name, columns in semantic.items():
+        logger.debug(f"is_query_relevant - Table: {table_name}, Columns: {list(columns.keys())}")
+        for col_name, col_info in columns.items():
+            logger.debug(f"is_query_relevant - Column: {col_name}, Info: {col_info}")
+    
     # Build semantic term sets by type
     table_terms = set()
     column_terms = set()
@@ -256,7 +270,17 @@ def is_query_relevant(query: str, semantic: dict) -> dict:
         for col_name, col_info in columns.items():
             column_terms.add(col_name.lower())
             if "term" in col_info:
-                semantic_terms.add(col_info["term"].lower())
+                term = col_info["term"].lower()
+                semantic_terms.add(term)
+                # 🔥 FIX: Split underscore-separated terms for partial matching
+                # "total_revenue" → ["total", "revenue"]
+                semantic_terms.update(term.split("_"))
+    
+    # 🔥 DEBUG: Log term sets
+    logger.debug(f"is_query_relevant - Table terms: {table_terms}")
+    logger.debug(f"is_query_relevant - Column terms: {column_terms}")
+    logger.debug(f"is_query_relevant - Semantic terms: {semantic_terms}")
+    logger.debug(f"is_query_relevant - Extracted semantic terms count: {len(semantic_terms)}")
     
     # Find matches by type with weights
     table_matches = []
@@ -275,6 +299,11 @@ def is_query_relevant(query: str, semantic: dict) -> dict:
     table_matches = list(dict.fromkeys(table_matches))
     column_matches = list(dict.fromkeys(column_matches))
     semantic_matches = list(dict.fromkeys(semantic_matches))
+    
+    # 🔥 DEBUG: Log matches
+    logger.debug(f"is_query_relevant - Table matches: {table_matches}")
+    logger.debug(f"is_query_relevant - Column matches: {column_matches}")
+    logger.debug(f"is_query_relevant - Semantic matches: {semantic_matches}")
     
     # Calculate weighted score
     score = (
@@ -297,20 +326,36 @@ def is_query_relevant(query: str, semantic: dict) -> dict:
     threshold = 1.5 if token_count <= 6 else 2.0
     coverage_threshold = 0.2
     
-    # 🔥 IMPROVED: If user mentions a table name, trust it (strong signal)
-    # Otherwise, require sufficient coverage
-    if score >= threshold:
-        if len(table_matches) >= 1:
-            # Table match is a strong signal - accept regardless of coverage
+    # 🔥 IMPROVED: Multi-tier relevance logic
+    # 1. Table match is strong signal, but requires minimum coverage to prevent noise bypass
+    # 2. Semantic match in short query (<=5 tokens) - accept (intent queries like "revenue", "sales")
+    # 3. Semantic match with aggregation intent (per/total) - accept (aggregation queries)
+    # 4. Otherwise, require sufficient score and coverage
+    if len(table_matches) >= 1:
+        # Table match is a strong signal, but require minimum coverage to prevent noise bypass
+        if coverage >= 0.3:
             relevant = True
-        elif coverage >= coverage_threshold:
-            # No table match, but good coverage - accept
-            relevant = True
+            logger.debug(f"is_query_relevant - ACCEPTED: Table match with sufficient coverage")
         else:
-            # Low coverage and no table match - reject
+            # Table match but low coverage - reject as noise
             relevant = False
+            logger.debug(f"is_query_relevant - REJECTED: Table match but low coverage (noise filtering)")
+    elif len(semantic_matches) >= 1 and token_count <= 5:
+        # Short query with semantic term - accept (intent-based queries)
+        relevant = True
+        logger.debug(f"is_query_relevant - ACCEPTED: Semantic match in short query")
+    elif len(semantic_matches) >= 1 and ("per" in tokens or "total" in tokens):
+        # Semantic match with aggregation intent - accept (aggregation queries)
+        relevant = True
+        logger.debug(f"is_query_relevant - ACCEPTED: Semantic match with aggregation intent (per/total)")
+    elif score >= threshold and coverage >= coverage_threshold:
+        # Good score and coverage - accept
+        relevant = True
+        logger.debug(f"is_query_relevant - ACCEPTED: Score and coverage sufficient")
     else:
+        # Low coverage and no strong signals - reject
         relevant = False
+        logger.debug(f"is_query_relevant - REJECTED: No strong signals (table={len(table_matches)}, semantic={len(semantic_matches)}, score={score}, coverage={coverage})")
     
     # Calculate confidence based on score and query length
     max_possible_score = 2.0 * token_count  # If all tokens were table matches
@@ -766,6 +811,16 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
     # Generate term interpretation explanations
     term_interpretations = generate_term_interpretation(user_query, semantic, relevance_check)
 
+    # 🔥 CRITICAL: Check user intent for dangerous operations BEFORE SQL generation
+    # This prevents AI from dodging DELETE/UPDATE by generating SELECT instead
+    dangerous_keywords = {"delete", "update", "drop", "truncate", "alter", "insert"}
+    user_intent_dangerous = any(keyword in user_query.lower() for keyword in dangerous_keywords)
+    force_write_mode = user_intent_dangerous
+    
+    if force_write_mode:
+        logger.warning(f"User intent detected as dangerous: {user_query}")
+        logger.warning("Forcing write mode and requiring confirmation regardless of generated SQL")
+
     if config.ai_provider in ("local", "hybrid") and not is_ollama_running():
         logger.warning("Ollama not running. Falling back to Nemotron or OpenAI if available.")
 
@@ -921,6 +976,13 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
 
     # Safety classification: READ vs WRITE
     safety_category, requires_confirmation = classify_query_safety(sql)
+    
+    # 🔥 CRITICAL: Force confirmation if user intent is dangerous, regardless of generated SQL
+    if force_write_mode:
+        requires_confirmation = True
+        safety_category = "write"
+        logger.warning(f"Overriding safety classification due to dangerous user intent: {safety_category}")
+    
     response["safety_category"] = safety_category
     response["requires_confirmation"] = requires_confirmation
 
@@ -976,17 +1038,22 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
             response["results"] = retry_execution["results"]
             response["auto_fixed"] = True
             
-            # Silent failure detection for aggregation queries
-            # Only flag if aggregation + joins + 0 rows (likely semantic issue)
+            # Silent failure detection for queries with joins
+            # Flag if joins + 0 rows (likely semantic issue or incorrect join condition)
             # to avoid false alarms for legitimate empty results
             has_aggregation = "group by" in sql.lower()
             has_joins = "join" in sql.lower()
             has_results = len(retry_execution["results"]) > 0
             
-            if has_aggregation and has_joins and not has_results:
-                logger.warning("Aggregation query with joins returned 0 rows - possible GROUP BY violation")
-                response["confidence"] = "low"
-                response["warning"] = "Aggregation query with joins returned 0 rows. This may indicate a GROUP BY violation or incorrect aggregation."
+            if has_joins and not has_results:
+                if has_aggregation:
+                    logger.warning("Aggregation query with joins returned 0 rows - possible GROUP BY violation")
+                    response["confidence"] = "low"
+                    response["warning"] = "Aggregation query with joins returned 0 rows. This may indicate a GROUP BY violation or incorrect aggregation."
+                else:
+                    logger.warning("Join query returned 0 rows - possible incorrect join condition or semantic issue")
+                    response["confidence"] = "low"
+                    response["warning"] = "Join query returned 0 rows. This may indicate an incorrect join condition or semantic mismatch."
             response["confidence"] = calculate_confidence(response)
         else:
             response["error"] = retry_execution["error"]
