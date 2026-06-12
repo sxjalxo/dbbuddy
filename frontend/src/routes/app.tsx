@@ -264,6 +264,24 @@ function DBBuddyApp() {
 
       const elapsedMs = Date.now() - startMs;
 
+      // 🔥 CRITICAL: Check for error first before anything else
+      if (data.error) {
+        setMessages((m) => m.map((msg) =>
+          msg.id === loadingId
+            ? {
+                ...msg,
+                status: "error" as const,
+                sql: data.sql ?? "",
+                text: "",
+                error: data.error,
+                confidence: data.confidence ?? "low",
+                aiProvider: db.engine,
+              }
+            : msg,
+        ));
+        return;
+      }
+
       // Non-SELECT: generated but held for approval
       if (!data.auto_executed) {
         setMessages((m) => m.map((msg) =>

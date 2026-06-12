@@ -289,13 +289,28 @@ def is_query_relevant(query: str, semantic: dict) -> dict:
     
     # Calculate relevance based on weighted score AND coverage
     # Coverage: percentage of tokens that matched schema terms
+    token_count = len(tokens)
     coverage = len(all_matches) / max(token_count, 1) if token_count > 0 else 0
     
     # Threshold: 1.5 for short queries, 2.0 for longer queries
     # Coverage threshold: at least 20% of tokens should be relevant
     threshold = 1.5 if token_count <= 6 else 2.0
     coverage_threshold = 0.2
-    relevant = score >= threshold and coverage >= coverage_threshold
+    
+    # 🔥 IMPROVED: If user mentions a table name, trust it (strong signal)
+    # Otherwise, require sufficient coverage
+    if score >= threshold:
+        if len(table_matches) >= 1:
+            # Table match is a strong signal - accept regardless of coverage
+            relevant = True
+        elif coverage >= coverage_threshold:
+            # No table match, but good coverage - accept
+            relevant = True
+        else:
+            # Low coverage and no table match - reject
+            relevant = False
+    else:
+        relevant = False
     
     # Calculate confidence based on score and query length
     max_possible_score = 2.0 * token_count  # If all tokens were table matches
@@ -755,7 +770,46 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
         logger.warning("Ollama not running. Falling back to Nemotron or OpenAI if available.")
 
     sql, model_used = generate_sql(user_query, semantic, provider=config.ai_provider, schema=schema)
+    
+    # 🔥 CRITICAL: Validate SQL immediately after generation - hard return if invalid
+    if not sql or not sql.strip():
+        logger.error(f"SQL generation returned empty or None")
+        return {
+            "query": user_query,
+            "sql": sql,
+            "query_type": "invalid",
+            "auto_executed": False,
+            "error": "SQL generation failed. The model could not produce a valid query. Try rephrasing your question.",
+            "confidence": "low",
+            "requires_confirmation": False  # Force false on error
+        }
+    
+    sql_lower = sql.strip().lower()
+    if sql_lower in ("unknown", "invalid", ""):
+        logger.error(f"SQL generation returned invalid value: {sql}")
+        return {
+            "query": user_query,
+            "sql": sql,
+            "query_type": "invalid",
+            "auto_executed": False,
+            "error": "SQL generation failed. The model could not produce a valid query. Try rephrasing your question.",
+            "confidence": "low",
+            "requires_confirmation": False  # Force false on error
+        }
+    
     query_type = get_query_type(sql)
+    
+    if query_type == "invalid":
+        logger.error(f"SQL generation produced invalid query type: {sql[:100]}")
+        return {
+            "query": user_query,
+            "sql": sql,
+            "query_type": "invalid",
+            "auto_executed": False,
+            "error": "SQL generation failed. The model could not produce a valid query. Try rephrasing your question.",
+            "confidence": "low",
+            "requires_confirmation": False  # Force false on error
+        }
     
     # Generate intent explanation for the query
     intent_explanation = plan_intent(user_query, semantic, provider=config.ai_provider)

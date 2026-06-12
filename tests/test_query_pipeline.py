@@ -754,7 +754,7 @@ class TestQuerySafety:
         assert column_result["score"] == 1.5  # Column match = 1.5
 
     def test_coverage_awareness_edge_case(self):
-        """Test that queries with low coverage are rejected even with strong matches."""
+        """Test that queries with low coverage are rejected even with strong matches (but no table match)."""
         from dbbuddy_core.pipeline import is_query_relevant
         
         semantic = {
@@ -764,14 +764,54 @@ class TestQuerySafety:
             }
         }
         
-        # Edge case: one strong match but low coverage
-        # "users something random blah blah" - has "users" but most tokens are irrelevant
-        result = is_query_relevant("users something random blah blah", semantic)
+        # Edge case: one strong match but low coverage (no table match)
+        # "id something random blah blah" - has "id" but most tokens are irrelevant
+        result = is_query_relevant("id something random blah blah", semantic)
         
-        # Should have high score (2.0 for table match) but low coverage (< 20%)
-        assert result["score"] >= 2.0  # Strong match
+        # Should have some score but low coverage (< 20%)
+        assert result["score"] >= 1.5  # Column match = 1.5
         assert result["coverage"] < 0.2  # Low coverage (1 match / 6 tokens = 16.7%)
-        assert result["relevant"] is False  # Should be rejected due to low coverage
+        assert result["relevant"] is False  # Should be rejected due to low coverage and no table match
+
+    def test_table_match_bypasses_coverage(self):
+        """Test that table matches bypass coverage requirement."""
+        from dbbuddy_core.pipeline import is_query_relevant
+        
+        semantic = {
+            "users": {
+                "name": {"term": "name"},
+                "email": {"term": "email"}
+            }
+        }
+        
+        # Query with table match but low coverage
+        # "List all users with their emails" - has "users" table match, coverage = 1/6 = 16.7%
+        result = is_query_relevant("List all users with their emails", semantic)
+        
+        # Should be accepted due to table match despite low coverage
+        assert result["score"] >= 2.0  # Table match = 2.0
+        assert result["coverage"] < 0.2  # Low coverage
+        assert result["relevant"] is True  # Should be accepted due to table match
+
+    def test_relevance_no_crash(self):
+        """Test that relevance detection doesn't crash on basic queries."""
+        from dbbuddy_core.pipeline import is_query_relevant
+        
+        semantic = {
+            "users": {
+                "name": {"term": "name"},
+                "email": {"term": "email"}
+            }
+        }
+        
+        # Basic query that should not crash
+        result = is_query_relevant("List all users with their emails", semantic)
+        
+        # Should have all required fields
+        assert "coverage" in result
+        assert "score" in result
+        assert "relevant" in result
+        assert "matched_terms" in result
 
     def test_generate_term_interpretation(self):
         """Test term interpretation generation."""
