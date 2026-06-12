@@ -43,6 +43,12 @@ logs/
 output.json
 *.tmp
 
+# ── Database ───────────────────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+*.sql.gz
+
 # ── Node / Frontend ───────────────────────────────────────────────────────────
 node_modules/
 frontend/node_modules/
@@ -54,10 +60,13 @@ frontend/.nitro/
 frontend/.wrangler/
 frontend/.dev.vars
 *.local
+frontend/.vite/
+frontend/coverage/
 
 # ── Editor & OS ──────────────────────────────────────────────────────────────
 .vscode/*
 !.vscode/extensions.json
+!.vscode/settings.json
 .idea/
 .DS_Store
 Thumbs.db
@@ -66,6 +75,8 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+*.sublime-project
+*.sublime-workspace
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
 .env
@@ -73,9 +84,36 @@ Thumbs.db
 !.env.example
 *.pem
 *.key
+*.crt
+*.p12
+*.pfx
 
+# ── AI / LLM ──────────────────────────────────────────────────────────────────
+*.ollama
+*.model
+.cache/
+*.llama*
+
+# ── Temporary files ───────────────────────────────────────────────────────────
+*.bak
+*.backup
+*.swp
+*.swo
+*~
+.cache/
+tmp/
+temp/
+
+# ── Build artifacts ───────────────────────────────────────────────────────────
+.wasmer/
+.wasm/
+*.wasm
+
+# ── Agent directories ─────────────────────────────────────────────────────────
 .agent/
 .devin/
 .kiro/
 .opencode/
 .vscode/
+.cursor/
+.claude/
