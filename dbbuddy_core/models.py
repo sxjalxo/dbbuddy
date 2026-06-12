@@ -9,4 +9,5 @@ class DBConfig:
     database: str
     ai: bool = False
     ai_provider: str = "local"
+    fallback_provider: str = "nemotron"
     mapping_plugin: str = "default_mapping"

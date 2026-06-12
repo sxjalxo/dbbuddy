@@ -73,6 +73,9 @@ def local_classify(col_name: str) -> str:
     if not is_ollama_running():
         logger.warning("Ollama not reachable at 127.0.0.1:11434")
     
+    # Use Qwen Coder as the primary local model
+    local_model = os.getenv("LOCAL_MODEL", "qwen2.5-coder:7b")
+    
     prompt = (
         f"Classify the database column '{col_name}' into one word from: "
         "value, quantity, name, date, identifier, status, description. "
@@ -83,7 +86,7 @@ def local_classify(col_name: str) -> str:
         response = requests.post(
             "http://127.0.0.1:11434/api/generate",
             json={
-                "model": "deepseek-coder",
+                "model": local_model,
                 "prompt": prompt,
                 "stream": False
             },
@@ -144,16 +147,61 @@ def local_classify(col_name: str) -> str:
     return _normalize(col_name)
 
 
+def nemotron_classify(col_name: str) -> str:
+    """Classify a column name using Nemotron 3 Ultra API."""
+    logger = logging.getLogger(__name__)
+    nemotron_api_key = os.getenv("NEMOTRON_API_KEY")
+    nemotron_endpoint = os.getenv("NEMOTRON_ENDPOINT", "https://integrate.api.nvidia.com/v1/chat/completions")
+
+    if not nemotron_api_key:
+        return _normalize(col_name)
+
+    prompt = (
+        f"Classify the database column '{col_name}' into one word from: "
+        "value, quantity, name, date, identifier, status, description. "
+        "Return only one word."
+    )
+
+    try:
+        response = requests.post(
+            nemotron_endpoint,
+            headers={
+                "Authorization": f"Bearer {nemotron_api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "nvidia/nemotron-3-270b-4k-instruct",
+                "messages": [
+                    {"role": "system", "content": "You classify database columns. Return only one word."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0,
+                "max_tokens": 5,
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        result = response.json()["choices"][0]["message"]["content"].strip().lower()
+
+        if result.isalnum():
+            return result
+
+    except Exception:
+        logger.warning(f"Nemotron classification failed for '{col_name}'")
+
+    return _normalize(col_name)
+
+
 def classify_column(col_name: str, provider: str) -> str:
     """Route classification to appropriate AI provider."""
     if provider == "local":
         return local_classify(col_name)
-    elif provider == "openai":
-        return openai_classify(col_name)
+    elif provider == "nemotron":
+        return nemotron_classify(col_name)
     elif provider == "hybrid":
         result = local_classify(col_name)
         if result == "unknown":
-            return openai_classify(col_name)
+            return nemotron_classify(col_name)
         return result
     else:
         return _normalize(col_name)  # fallback to column name
@@ -163,6 +211,10 @@ def batch_local_classify(col_names: list[str], schema: dict | None = None) -> di
     """Classify multiple columns using local Ollama LLM in a single batch."""
     logger = logging.getLogger(__name__)
     knowledge_base = build_knowledge_base(schema)
+    
+    # Use Qwen Coder as the primary local model
+    local_model = os.getenv("LOCAL_MODEL", "qwen2.5-coder:7b")
+    
     prompt = (
         "Use the connected database schema as the knowledge base. "
         "Classify each column into one word from: "
@@ -176,7 +228,7 @@ def batch_local_classify(col_names: list[str], schema: dict | None = None) -> di
         response = requests.post(
             "http://127.0.0.1:11434/api/generate",
             json={
-                "model": "deepseek-coder",
+                "model": local_model,
                 "prompt": prompt,
                 "stream": False
             },
@@ -243,12 +295,62 @@ def batch_openai_classify(col_names: list[str], schema: dict | None = None) -> d
         return {col: _normalize(col) for col in col_names}  # fallback to column names
 
 
+def batch_nemotron_classify(col_names: list[str], schema: dict | None = None) -> dict[str, str]:
+    """Classify multiple columns using Nemotron 3 Ultra API in a single batch."""
+    logger = logging.getLogger(__name__)
+    nemotron_api_key = os.getenv("NEMOTRON_API_KEY")
+    nemotron_endpoint = os.getenv("NEMOTRON_ENDPOINT", "https://integrate.api.nvidia.com/v1/chat/completions")
+    knowledge_base = build_knowledge_base(schema)
+
+    if not nemotron_api_key:
+        return {col: _normalize(col) for col in col_names}
+
+    prompt = (
+        "Use the connected database schema as the knowledge base. "
+        "Classify each column into one word from: "
+        "value, quantity, name, date, identifier, status, description.\n\n"
+        "Return JSON mapping with the exact column keys provided.\n\n"
+        f"Knowledge base: {knowledge_base}\n\n"
+        f"Columns: {col_names}"
+    )
+
+    try:
+        response = requests.post(
+            nemotron_endpoint,
+            headers={
+                "Authorization": f"Bearer {nemotron_api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "nvidia/nemotron-3-270b-4k-instruct",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 100,
+                "temperature": 0
+            },
+            timeout=10
+        )
+
+        text = response.json()["choices"][0]["message"]["content"]
+
+        import json
+        parsed = json.loads(text)
+
+        return {
+            col: val.lower() if val and val.isalnum() else _normalize(col)
+            for col, val in parsed.items()
+            if col in col_names
+        }
+
+    except Exception:
+        return {col: _normalize(col) for col in col_names}  # fallback to column names
+
+
 def batch_classify_columns(col_names: list[str], provider: str, schema: dict | None = None) -> dict[str, str]:
     """Route batch classification to appropriate AI provider."""
     if provider == "local":
         return batch_local_classify(col_names, schema)
-    elif provider == "openai":
-        return batch_openai_classify(col_names, schema)
+    elif provider == "nemotron":
+        return batch_nemotron_classify(col_names, schema)
     elif provider == "hybrid":
         results = batch_local_classify(col_names, schema)
 
@@ -256,7 +358,7 @@ def batch_classify_columns(col_names: list[str], provider: str, schema: dict | N
         unknowns = [c for c, r in results.items() if r == "unknown"]
 
         if unknowns:
-            fallback = batch_openai_classify(unknowns, schema)
+            fallback = batch_nemotron_classify(unknowns, schema)
             results.update(fallback)
 
         return results

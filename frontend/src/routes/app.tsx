@@ -180,6 +180,31 @@ function DBBuddyApp() {
     root.classList.toggle("dark", theme === "dark");
   }, [theme]);
 
+  // Load saved database configuration from localStorage on mount
+  useEffect(() => {
+    const savedConfig = localStorage.getItem("db_config");
+    if (savedConfig) {
+      try {
+        const config = JSON.parse(savedConfig);
+        if (config && config.host && config.user && config.database) {
+          setDatabases([{
+            id: crypto.randomUUID(),
+            name: config.name || "Saved Database",
+            engine: config.engine || "MySQL",
+            status: "connected",
+            host: config.host,
+            user: config.user,
+            password: config.password || "",
+            database: config.database,
+          }]);
+          setActiveDb(config.name || "Saved Database");
+        }
+      } catch (e) {
+        console.error("Failed to load saved database config:", e);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
@@ -375,6 +400,7 @@ function DBBuddyApp() {
         onNewChat={newChat}
         onRerun={ask}
         queryHistory={queryHistory}
+        messages={messages}
       />
 
       <main className="relative flex min-w-0 flex-1 flex-col">
@@ -394,49 +420,69 @@ function DBBuddyApp() {
           onAnalyze={() => analyzeDB()}
           analysisLoading={analysisLoading}
           hasDb={!!activeDbObj}
+          onConnect={() => setConnectOpen(true)}
         />
 
         <div className="relative flex min-h-0 flex-1">
-          <div className="flex min-w-0 flex-1 flex-col">
-            <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 sm:px-8 py-6">
-              {messages.length === 0 ? (
-                <EmptyState onPick={ask} hasDb={!!activeDbObj} onConnect={() => setConnectOpen(true)} />
-              ) : (
-                <div className="mx-auto flex max-w-4xl flex-col gap-6 pb-4">
-                  {messages.map((m) =>
-                    m.role === "user" ? (
-                      <UserBubble key={m.id} text={m.text} />
-                    ) : (
-                      <AssistantBubble
-                        key={m.id}
-                        message={m}
-                        onRegenerate={() => regenerate(m.sourceQuery)}
-                        onEdit={() => m.sourceQuery && setInput(m.sourceQuery)}
-                      />
-                    ),
-                  )}
-                </div>
-              )}
-            </div>
-
-            <Composer
-              value={input}
-              setValue={setInput}
-              onSend={() => ask(input)}
-              sending={sending}
-              hasDb={!!activeDbObj}
+          {section === "history" ? (
+            <QueryHistoryPanel
+              messages={messages}
+              onRerun={ask}
+              onLoadQuery={(query) => {
+                setInput(query);
+                setSection("chat");
+              }}
             />
-          </div>
+          ) : section === "settings" ? (
+            <SettingsPanel
+              theme={theme}
+              toggleTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
+              onBack={() => setSection("chat")}
+            />
+          ) : (
+            <div className="flex min-w-0 flex-1 flex-col">
+              <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 sm:px-8 py-6">
+                {messages.length === 0 ? (
+                  <EmptyState onPick={ask} hasDb={!!activeDbObj} onConnect={() => setConnectOpen(true)} />
+                ) : (
+                  <div className="mx-auto flex max-w-4xl flex-col gap-6 pb-4">
+                    {messages.map((m) =>
+                      m.role === "user" ? (
+                        <UserBubble key={m.id} text={m.text} />
+                      ) : (
+                        <AssistantBubble
+                          key={m.id}
+                          message={m}
+                          onRegenerate={() => regenerate(m.sourceQuery)}
+                          onEdit={() => m.sourceQuery && setInput(m.sourceQuery)}
+                        />
+                      ),
+                    )}
+                  </div>
+                )}
+              </div>
 
-          {/* Right panel */}
-          <RightPanel
-            result={lastAssistant?.result}
-            resultMessageId={lastAssistant?.id}
-            analysisResult={analysisResult}
-            analysisError={analysisError}
-            hasConnectedDb={databases.some((db) => db.status === "connected")}
-            onConnect={() => setConnectOpen(true)}
-          />
+              <Composer
+                value={input}
+                setValue={setInput}
+                onSend={() => ask(input)}
+                sending={sending}
+                hasDb={!!activeDbObj}
+              />
+            </div>
+          )}
+
+          {/* Right panel - only show in chat section */}
+          {section === "chat" && (
+            <RightPanel
+              result={lastAssistant?.result}
+              resultMessageId={lastAssistant?.id}
+              analysisResult={analysisResult}
+              analysisError={analysisError}
+              hasConnectedDb={databases.some((db) => db.status === "connected")}
+              onConnect={() => setConnectOpen(true)}
+            />
+          )}
         </div>
       </main>
 
@@ -446,6 +492,15 @@ function DBBuddyApp() {
         onAdd={(db) => {
           setDatabases((d) => [...d, db]);
           setActiveDb(db.name);
+          // Save database configuration to localStorage
+          localStorage.setItem("db_config", JSON.stringify({
+            name: db.name,
+            engine: db.engine,
+            host: db.host,
+            user: db.user,
+            password: db.password,
+            database: db.database,
+          }));
         }}
       />
     </div>
@@ -465,6 +520,7 @@ function Sidebar(props: {
   onNewChat: () => void;
   onRerun: (q: string) => void;
   queryHistory: string[];
+  messages: Message[];
 }) {
   const nav = [
     { id: "chat", label: "Chat", icon: MessageSquare },
@@ -528,17 +584,42 @@ function Sidebar(props: {
           {props.queryHistory.length === 0 ? (
             <p className="px-2 py-1 text-[11px] text-muted-foreground/60 italic">No queries yet</p>
           ) : (
-            props.queryHistory.map((h) => (
-              <button
-                key={h}
-                onClick={() => props.onRerun(h)}
-                title={`Re-run: ${h}`}
-                className="group flex items-center gap-2 truncate rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
-              >
-                <Clock className="h-3 w-3 shrink-0 opacity-60 group-hover:text-primary" />
-                <span className="truncate">{h}</span>
-              </button>
-            ))
+            props.queryHistory.map((h) => {
+              // Find the corresponding assistant message to get status and confidence
+              const assistantMsg = props.messages.find(
+                (m): m is Extract<Message, { role: "assistant" }> => 
+                  m.role === "assistant" && m.sourceQuery === h
+              );
+              const status = assistantMsg?.status;
+              const confidence = assistantMsg?.confidence;
+              
+              return (
+                <button
+                  key={h}
+                  onClick={() => props.onRerun(h)}
+                  title={`Re-run: ${h}`}
+                  className="group flex items-center gap-2 truncate rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+                >
+                  <Clock className="h-3 w-3 shrink-0 opacity-60 group-hover:text-primary" />
+                  <span className="truncate flex-1">{h}</span>
+                  {status === "success" && (
+                    <Check className="h-3 w-3 shrink-0 text-[oklch(0.72_0.17_155)]" />
+                  )}
+                  {status === "error" && (
+                    <AlertCircle className="h-3 w-3 shrink-0 text-destructive" />
+                  )}
+                  {confidence === "high" && (
+                    <span className="text-[9px] text-[oklch(0.72_0.17_155)]">✓</span>
+                  )}
+                  {confidence === "medium" && (
+                    <span className="text-[9px] text-amber-400">~</span>
+                  )}
+                  {confidence === "low" && (
+                    <span className="text-[9px] text-destructive">!</span>
+                  )}
+                </button>
+              );
+            })
           )}
         </div>
       </div>
@@ -598,7 +679,7 @@ function Sidebar(props: {
 }
 
 // ---------- Top bar ----------
-function TopBar({ activeDb, databases, setActiveDb, onNewChat, onAnalyze, analysisLoading, hasDb }: {
+function TopBar({ activeDb, databases, setActiveDb, onNewChat, onAnalyze, analysisLoading, hasDb, onConnect }: {
   activeDb: string;
   databases: DB[];
   setActiveDb: (s: string) => void;
@@ -606,20 +687,87 @@ function TopBar({ activeDb, databases, setActiveDb, onNewChat, onAnalyze, analys
   onAnalyze: () => void;
   analysisLoading: boolean;
   hasDb: boolean;
+  onConnect: () => void;
 }) {
+  const [dbMenuOpen, setDbMenuOpen] = useState(false);
+
   return (
     <header className="relative z-10 flex items-center justify-between gap-4 border-b border-border/60 bg-background/80 px-4 sm:px-8 py-3 backdrop-blur">
-      <div>
-        <h1 className="font-display text-xl font-semibold tracking-tight sm:text-2xl">
-          {activeDb
-            ? <>Connected to <span className="text-brand-gradient">{activeDb}</span></>
-            : <>Connect a <span className="text-brand-gradient">database</span> to start</>}
-        </h1>
-        <p className="text-xs text-muted-foreground">
-          <Sparkles className="mr-1 inline h-3 w-3 text-accent" />
-          Powered by AI + Semantic Layer
-        </p>
+      <div className="flex items-center gap-4">
+        <div>
+          <h1 className="font-display text-xl font-semibold tracking-tight sm:text-2xl">
+            {activeDb
+              ? <>Connected to <span className="text-brand-gradient">{activeDb}</span></>
+              : <>Connect a <span className="text-brand-gradient">database</span> to start</>}
+          </h1>
+          <p className="text-xs text-muted-foreground">
+            <Sparkles className="mr-1 inline h-3 w-3 text-accent" />
+            Powered by AI + Semantic Layer
+          </p>
+        </div>
+        
+        {/* Database dropdown menu */}
+        {activeDb && (
+          <div className="relative">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setDbMenuOpen(!dbMenuOpen)}
+              className="gap-2"
+            >
+              <Database className="h-3.5 w-3.5" />
+              {activeDb}
+              <ChevronDown className="h-3.5 w-3.5" />
+            </Button>
+            
+            {dbMenuOpen && (
+              <div className="absolute top-full left-0 mt-2 w-48 rounded-lg border border-border bg-card shadow-lg z-50">
+                <div className="p-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-full justify-start gap-2 h-8 text-xs"
+                    onClick={() => {
+                      setDbMenuOpen(false);
+                      // Reconnect logic - just refresh the connection
+                      onAnalyze();
+                    }}
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    Reconnect
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-full justify-start gap-2 h-8 text-xs"
+                    onClick={() => {
+                      setDbMenuOpen(false);
+                      onConnect();
+                    }}
+                  >
+                    <Database className="h-3 w-3" />
+                    Change Database
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-full justify-start gap-2 h-8 text-xs text-destructive hover:text-destructive"
+                    onClick={() => {
+                      setDbMenuOpen(false);
+                      localStorage.removeItem("db_config");
+                      window.location.reload();
+                    }}
+                  >
+                    <X className="h-3 w-3" />
+                    Disconnect
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
+      
       <div className="flex items-center gap-2">
         <Button variant="outline" size="sm" className="gap-1.5" onClick={onNewChat}>
           <Plus className="h-3.5 w-3.5" />
@@ -635,21 +783,6 @@ function TopBar({ activeDb, databases, setActiveDb, onNewChat, onAnalyze, analys
           {analysisLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
           {analysisLoading ? "Analyzing…" : "Analyze Schema"}
         </Button>
-        {databases.filter((d) => d.status === "connected").length > 0 ? (
-          <Select value={activeDb} onValueChange={setActiveDb}>
-            <SelectTrigger className="w-[200px] bg-card">
-              <Database className="mr-2 h-3.5 w-3.5 text-muted-foreground" />
-              <SelectValue placeholder="Select database" />
-            </SelectTrigger>
-            <SelectContent>
-              {databases.filter((d) => d.status === "connected").map((d) => (
-                <SelectItem key={d.id} value={d.name}>
-                  {d.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        ) : null}
       </div>
     </header>
   );
@@ -815,29 +948,51 @@ function AssistantBubble({
           )}
           <p className="text-sm leading-relaxed text-muted-foreground">{message.text}</p>
 
-          {message.result?.semantic?.length ? (
-            <div className="mt-3 border-t border-border/60 pt-3">
-              <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                Semantic interpretation
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {message.result.semantic.map((s, si) => (
-                  <span
-                    key={`${message.id}-${si}-${s.from}-${s.to}`}
-                    className="inline-flex items-center gap-1 rounded-md border border-border bg-background/50 px-2 py-0.5 font-mono text-[10.5px]"
-                  >
-                    <span className="text-muted-foreground">{s.from}</span>
-                    <ArrowRight className="h-2.5 w-2.5 text-primary" />
-                    <span>{s.to}</span>
-                  </span>
-                ))}
+          {/* Enhanced result card with structured sections */}
+          {message.result && (
+            <div className="mt-3 space-y-3 border-t border-border/60 pt-3">
+              {/* Understanding Section */}
+              {message.result.semantic?.length ? (
+                <div>
+                  <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                    <Sparkles className="h-3 w-3" />
+                    Understanding
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {message.result.semantic.map((s, si) => (
+                      <span
+                        key={`${message.id}-${si}-${s.from}-${s.to}`}
+                        className="inline-flex items-center gap-1 rounded-md border border-border bg-background/50 px-2 py-0.5 font-mono text-[10.5px]"
+                      >
+                        <span className="text-muted-foreground">{s.from}</span>
+                        <ArrowRight className="h-2.5 w-2.5 text-primary" />
+                        <span>{s.to}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {/* Metadata Grid */}
+              <div className="grid grid-cols-3 gap-2">
+                <div className="rounded-md border border-border bg-background/50 px-2 py-1.5">
+                  <div className="text-[9px] text-muted-foreground">Rows</div>
+                  <div className="text-xs font-medium">{message.result.rows.length}</div>
+                </div>
+                <div className="rounded-md border border-border bg-background/50 px-2 py-1.5">
+                  <div className="text-[9px] text-muted-foreground">Time</div>
+                  <div className="text-xs font-medium">{message.result.timeMs}ms</div>
+                </div>
+                <div className="rounded-md border border-border bg-background/50 px-2 py-1.5">
+                  <div className="text-[9px] text-muted-foreground">Source</div>
+                  <div className="text-xs font-medium">{message.result.source}</div>
+                </div>
               </div>
             </div>
-          ) : null}
+          )}
         </div>
 
         <SQLBlock sql={message.sql} />
-
 
         {message.result && <ResultsView result={message.result} messageId={message.id} />}
       </div>
@@ -1172,7 +1327,7 @@ function RightPanel({
 
             {analysisResult.metadata.ai_used ? (
               <div className="mt-3 inline-flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1 text-[11px] font-medium text-primary">
-                <Sparkles className="h-3.5 w-3.5" /> AI Enhanced Mapping Enabled
+                <Sparkles className="h-3.5 w-3.5" /> AI Mapping Active
               </div>
             ) : null}
 
@@ -1285,6 +1440,240 @@ function Metric({ icon: Icon, label, value }: { icon: any; label: string; value:
         {label}
       </div>
       <div className="font-mono text-sm">{value}</div>
+    </div>
+  );
+}
+
+// ---------- Query History Panel ----------
+function QueryHistoryPanel({
+  messages,
+  onRerun,
+  onLoadQuery,
+}: {
+  messages: Message[];
+  onRerun: (query: string) => void;
+  onLoadQuery: (query: string) => void;
+}) {
+  const userMessages = messages.filter((m) => m.role === "user");
+  const assistantMessages = messages.filter((m) => m.role === "assistant");
+
+  // Pair user messages with their corresponding assistant responses
+  const queryHistory = userMessages.map((userMsg) => {
+    const assistantMsg = assistantMessages.find((am) => am.sourceQuery === userMsg.text);
+    return {
+      userQuery: userMsg.text,
+      status: assistantMsg?.status ?? "unknown",
+      confidence: assistantMsg?.confidence,
+      timestamp: userMsg.id, // Using ID as timestamp proxy
+    };
+  }).reverse(); // Most recent first
+
+  return (
+    <div className="flex min-w-0 flex-1 flex-col px-8 py-6">
+      <div className="mb-6">
+        <h1 className="font-display text-2xl font-semibold tracking-tight">Query History</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          View and re-run your past queries
+        </p>
+      </div>
+
+      {queryHistory.length === 0 ? (
+        <div className="flex flex-1 items-center justify-center">
+          <div className="text-center">
+            <History className="mx-auto h-12 w-12 text-muted-foreground/50" />
+            <p className="mt-4 text-sm text-muted-foreground">No query history yet</p>
+          </div>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto">
+          <div className="space-y-3">
+            {queryHistory.map((item, idx) => (
+              <div
+                key={`${item.timestamp}-${idx}`}
+                className="rounded-xl border border-border bg-card/80 p-4 hover:border-primary/60 transition-colors"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1">
+                    <p className="text-sm font-medium">{item.userQuery}</p>
+                    <div className="mt-2 flex items-center gap-2">
+                      {item.status === "success" && (
+                        <Badge className="border-0 bg-[oklch(0.72_0.17_155)]/15 text-[oklch(0.82_0.17_155)]">
+                          <Check className="mr-1 h-3 w-3" /> Success
+                        </Badge>
+                      )}
+                      {item.status === "error" && (
+                        <Badge variant="destructive" className="border-0">
+                          <AlertCircle className="mr-1 h-3 w-3" /> Failed
+                        </Badge>
+                      )}
+                      {item.confidence && (
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "text-[10px]",
+                            item.confidence === "high" && "border-[oklch(0.72_0.17_155)]/40 text-[oklch(0.82_0.17_155)]",
+                            item.confidence === "medium" && "border-amber-500/40 text-amber-400",
+                            item.confidence === "low" && "border-destructive/40 text-destructive",
+                          )}
+                        >
+                          {item.confidence} confidence
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 gap-1.5 text-xs"
+                      onClick={() => onRerun(item.userQuery)}
+                    >
+                      <RefreshCw className="h-3 w-3" /> Re-run
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-8 gap-1.5 text-xs"
+                      onClick={() => onLoadQuery(item.userQuery)}
+                    >
+                      <Pencil className="h-3 w-3" /> Edit
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Settings Panel ----------
+function SettingsPanel({
+  theme,
+  toggleTheme,
+  onBack,
+}: {
+  theme: "dark" | "light";
+  toggleTheme: () => void;
+  onBack: () => void;
+}) {
+  const [aiProvider, setAiProvider] = useState<"local" | "nemotron" | "hybrid">("hybrid");
+  const [autoExecute, setAutoExecute] = useState(true);
+
+  return (
+    <div className="flex min-w-0 flex-1 flex-col px-8 py-6">
+      <div className="mb-6 flex items-center gap-4">
+        <Button variant="ghost" size="sm" onClick={onBack} className="gap-2">
+          <ArrowRight className="h-4 w-4 rotate-180" /> Back
+        </Button>
+        <div>
+          <h1 className="font-display text-2xl font-semibold tracking-tight">Settings</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Configure your DB Buddy experience
+          </p>
+        </div>
+      </div>
+
+      <div className="max-w-2xl space-y-6">
+        {/* AI Provider */}
+        <div className="rounded-xl border border-border bg-card/80 p-6">
+          <h2 className="mb-4 text-sm font-semibold">AI Provider</h2>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium">Default AI Provider</div>
+                <div className="text-xs text-muted-foreground">
+                  Choose which AI model to use for query generation
+                </div>
+              </div>
+              <Select value={aiProvider} onValueChange={(v: any) => setAiProvider(v)}>
+                <SelectTrigger className="w-[180px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="local">Local (Qwen)</SelectItem>
+                  <SelectItem value="nemotron">Nemotron</SelectItem>
+                  <SelectItem value="hybrid">Hybrid (Auto)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </div>
+
+        {/* Execution Settings */}
+        <div className="rounded-xl border border-border bg-card/80 p-6">
+          <h2 className="mb-4 text-sm font-semibold">Execution Settings</h2>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium">Auto-execute READ queries</div>
+                <div className="text-xs text-muted-foreground">
+                  Automatically run SELECT queries without confirmation
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant={autoExecute ? "default" : "outline"}
+                onClick={() => setAutoExecute(!autoExecute)}
+                className="w-[80px]"
+              >
+                {autoExecute ? "On" : "Off"}
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* Appearance */}
+        <div className="rounded-xl border border-border bg-card/80 p-6">
+          <h2 className="mb-4 text-sm font-semibold">Appearance</h2>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium">Theme</div>
+                <div className="text-xs text-muted-foreground">
+                  Choose your preferred color scheme
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={toggleTheme}
+                className="w-[140px] gap-2"
+              >
+                {theme === "dark" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+                {theme === "dark" ? "Dark" : "Light"}
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* Database Management */}
+        <div className="rounded-xl border border-border bg-card/80 p-6">
+          <h2 className="mb-4 text-sm font-semibold">Database Management</h2>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium">Clear Saved Database</div>
+                <div className="text-xs text-muted-foreground">
+                  Remove saved database credentials from local storage
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => {
+                  localStorage.removeItem("db_config");
+                  window.location.reload();
+                }}
+              >
+                Clear
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

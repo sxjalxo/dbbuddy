@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, call, patch
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from dbbuddy_core.schema import fetch_schema
-from dbbuddy_core.ai import local_classify, openai_classify, classify_column, ai_refine, batch_local_classify, batch_openai_classify, batch_classify_columns
+from dbbuddy_core.ai import local_classify, classify_column, ai_refine, batch_local_classify, batch_nemotron_classify, batch_classify_columns
 from dbbuddy.main import load_config
 from dbbuddy_core.plugins.loader import load_mapping_plugin
 
@@ -17,31 +17,6 @@ class TestMain(unittest.TestCase):
 
     # ── Helper: build a minimal argv without --ai ────────────────────────────
     _base_argv = ["main.py"]
-
-    # ── Test: --ai without OPENAI_API_KEY exits with code 1 ─────────────────
-    def test_ai_flag_without_api_key_exits(self):
-        """The CLI exits if the core pipeline cannot produce a result."""
-        from dbbuddy.main import main
-        with patch("sys.argv", ["main.py", "--ai"]):
-            with patch("dbbuddy.main.load_config", return_value={"host": "localhost", "user": "root", "database": "testdb"}):
-                with patch("dbbuddy.main.process_schema", return_value=None):
-                    with patch("dbbuddy.main.getpass.getpass", return_value="pw"):
-                        with patch("builtins.print"):
-                            with self.assertRaises(SystemExit) as ctx:
-                                main()
-        self.assertEqual(ctx.exception.code, 1)
-
-    def test_ai_flag_without_api_key_prints_error(self):
-        """The thin CLI still prints the semantic result from the core pipeline."""
-        from dbbuddy.main import main
-        with patch("sys.argv", ["main.py", "--ai", "--ai-provider", "openai"]):
-            with patch("dbbuddy.main.load_config", return_value={"host": "localhost", "user": "root", "database": "testdb"}):
-                with patch("dbbuddy.main.process_schema", return_value={"users": {"id": {"term": "identifier"}}}):
-                    with patch("dbbuddy.main.getpass.getpass", return_value="pw"):
-                        with patch("builtins.print") as mock_print:
-                            main()
-        all_printed = " ".join(str(call.args[0]) for call in mock_print.call_args_list)
-        self.assertIn('"users"', all_printed)
 
     # ── Test: empty host defaults to "localhost" ──────────────────────────────
     def test_empty_host_uses_localhost_default(self):
@@ -1347,52 +1322,33 @@ class TestAIMapper(unittest.TestCase):
             result = local_classify("email")
             self.assertEqual(result, "unknown")
 
-    def test_openai_classify_success(self):
-        """OpenAI classification returns valid term (Req 6.2)"""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "choices": [{"message": {"content": "identifier"}}]
-        }
-        
-        with patch("dbbuddy_core.ai.requests.post", return_value=mock_response):
-            with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
-                result = openai_classify("email")
-                self.assertEqual(result, "identifier")
-
-    def test_openai_classify_timeout_returns_unknown(self):
-        """OpenAI timeout returns unknown (Req 6.3)"""
-        with patch("dbbuddy_core.ai.requests.post", side_effect=Exception("Timeout")):
-            with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
-                result = openai_classify("email")
-                self.assertEqual(result, "unknown")
-
     def test_classify_column_local_provider(self):
         """classify_column routes to local provider"""
         with patch("dbbuddy_core.ai.local_classify", return_value="identifier"):
             result = classify_column("email", "local")
             self.assertEqual(result, "identifier")
 
-    def test_classify_column_openai_provider(self):
-        """classify_column routes to OpenAI provider"""
-        with patch("dbbuddy_core.ai.openai_classify", return_value="identifier"):
-            result = classify_column("email", "openai")
+    def test_classify_column_nemotron_provider(self):
+        """classify_column routes to nemotron provider"""
+        with patch("dbbuddy_core.ai.nemotron_classify", return_value="identifier"):
+            result = classify_column("email", "nemotron")
             self.assertEqual(result, "identifier")
 
     def test_classify_column_hybrid_fallback(self):
-        """Hybrid provider falls back to OpenAI when local returns unknown"""
+        """Hybrid provider falls back to nemotron when local returns unknown"""
         with patch("dbbuddy_core.ai.local_classify", return_value="unknown"):
-            with patch("dbbuddy_core.ai.openai_classify", return_value="value"):
+            with patch("dbbuddy_core.ai.nemotron_classify", return_value="value"):
                 result = classify_column("amount", "hybrid")
                 self.assertEqual(result, "value")
 
     def test_classify_column_hybrid_no_fallback(self):
         """Hybrid provider uses local result when successful"""
         with patch("dbbuddy_core.ai.local_classify", return_value="identifier"):
-            with patch("dbbuddy_core.ai.openai_classify", return_value="value") as mock_openai:
+            with patch("dbbuddy_core.ai.nemotron_classify", return_value="value") as mock_nemotron:
                 result = classify_column("email", "hybrid")
                 self.assertEqual(result, "identifier")
-                # OpenAI should not be called
-                mock_openai.assert_not_called()
+                # Nemotron should not be called
+                mock_nemotron.assert_not_called()
 
     def test_classify_column_invalid_provider(self):
         """Invalid provider returns unknown"""
@@ -1410,7 +1366,7 @@ class TestAIMapper(unittest.TestCase):
         }
         
         with patch("dbbuddy_core.ai.batch_classify_columns", return_value={"users.email": "contact"}):
-            result = ai_refine(semantic_layer, "openai")
+            result = ai_refine(semantic_layer, "nemotron")
             self.assertEqual(result["users"]["email"]["term"], "contact")
             self.assertEqual(result["users"]["email"]["source"], "ai")
 
@@ -1426,26 +1382,10 @@ class TestAIMapper(unittest.TestCase):
         
         with patch("dbbuddy_core.ai.batch_classify_columns", return_value={"users.email": "contact"}):
             with patch("dbbuddy_core.ai.logging.getLogger") as mock_get_logger:
-                ai_refine(semantic_layer, "openai")
+                ai_refine(semantic_layer, "nemotron")
                 # Verify batch logging calls on the logger returned by getLogger
-                mock_get_logger.return_value.info.assert_any_call("[openai] Batch classifying 3 columns from schema context")
-                mock_get_logger.return_value.info.assert_any_call("[openai] Batch classification completed")
-
-    def test_openai_classify_caching(self):
-        """Cache prevents repeated API calls for same column"""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "choices": [{"message": {"content": "identifier"}}]
-        }
-        
-        with patch("dbbuddy_core.ai.requests.post", return_value=mock_response) as mock_post:
-            with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
-                result1 = openai_classify("email")
-                result2 = openai_classify("email")
-                self.assertEqual(result1, "identifier")
-                self.assertEqual(result2, "identifier")
-                # Should only call API once due to caching
-                self.assertEqual(mock_post.call_count, 1)
+                mock_get_logger.return_value.info.assert_any_call("[nemotron] Batch classifying 3 columns from schema context")
+                mock_get_logger.return_value.info.assert_any_call("[nemotron] Batch classification completed")
 
     def test_batch_local_classify_success(self):
         """Batch local classification returns valid mapping"""
@@ -1466,16 +1406,16 @@ class TestAIMapper(unittest.TestCase):
             self.assertEqual(result["email"], "unknown")
             self.assertEqual(result["phone"], "unknown")
 
-    def test_batch_openai_classify_success(self):
-        """Batch OpenAI classification returns valid mapping"""
+    def test_batch_nemotron_classify_success(self):
+        """Batch nemotron classification returns valid mapping"""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "choices": [{"message": {"content": '{"email": "identifier", "phone": "contact"}'}}]
         }
         
         with patch("dbbuddy_core.ai.requests.post", return_value=mock_response):
-            with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
-                result = batch_openai_classify(["email", "phone"])
+            with patch.dict(os.environ, {"NEMOTRON_API_KEY": "test-key"}):
+                result = batch_nemotron_classify(["email", "phone"])
                 self.assertEqual(result["email"], "identifier")
                 self.assertEqual(result["phone"], "contact")
 
@@ -1485,16 +1425,16 @@ class TestAIMapper(unittest.TestCase):
             result = batch_classify_columns(["email"], "local")
             self.assertEqual(result["email"], "identifier")
 
-    def test_batch_classify_columns_openai_provider(self):
-        """Batch classify routes to OpenAI provider"""
-        with patch("dbbuddy_core.ai.batch_openai_classify", return_value={"email": "identifier"}):
-            result = batch_classify_columns(["email"], "openai")
+    def test_batch_classify_columns_nemotron_provider(self):
+        """Batch classify routes to nemotron provider"""
+        with patch("dbbuddy_core.ai.batch_nemotron_classify", return_value={"email": "identifier"}):
+            result = batch_classify_columns(["email"], "nemotron")
             self.assertEqual(result["email"], "identifier")
 
     def test_batch_classify_columns_hybrid_fallback(self):
-        """Batch hybrid falls back to OpenAI for unknowns"""
+        """Batch hybrid falls back to nemotron for unknowns"""
         with patch("dbbuddy_core.ai.batch_local_classify", return_value={"email": "unknown"}):
-            with patch("dbbuddy_core.ai.batch_openai_classify", return_value={"email": "identifier"}):
+            with patch("dbbuddy_core.ai.batch_nemotron_classify", return_value={"email": "identifier"}):
                 result = batch_classify_columns(["email"], "hybrid")
                 self.assertEqual(result["email"], "identifier")
 
@@ -1509,7 +1449,7 @@ class TestAIMapper(unittest.TestCase):
         }
         
         with patch("dbbuddy_core.ai.batch_classify_columns", return_value={"users.email": "contact", "users.phone": "contact"}):
-            result = ai_refine(semantic_layer, "openai")
+            result = ai_refine(semantic_layer, "nemotron")
             self.assertEqual(result["users"]["email"]["term"], "contact")
             self.assertEqual(result["users"]["email"]["source"], "ai")
             self.assertEqual(result["users"]["phone"]["term"], "contact")
@@ -1526,7 +1466,7 @@ class TestAIMapper(unittest.TestCase):
         schema = {"users": ["id", "email"]}
 
         with patch("dbbuddy_core.ai.batch_classify_columns", return_value={"users.id": "identifier", "users.email": "description"}) as mock_batch:
-            result = ai_refine(semantic_layer, "openai", schema)
+            result = ai_refine(semantic_layer, "nemotron", schema)
 
         self.assertEqual(result["users"]["id"]["term"], "identifier")
         self.assertEqual(result["users"]["email"]["term"], "description")
@@ -1538,7 +1478,7 @@ class TestAIMapper(unittest.TestCase):
         semantic_layer = {}
 
         with patch("dbbuddy_core.ai.batch_classify_columns") as mock_batch:
-            result = ai_refine(semantic_layer, "openai")
+            result = ai_refine(semantic_layer, "nemotron")
             mock_batch.assert_not_called()
             self.assertEqual(result, semantic_layer)
 
