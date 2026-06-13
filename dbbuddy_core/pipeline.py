@@ -265,6 +265,15 @@ def is_query_relevant(query: str, semantic: dict) -> dict:
     column_terms = set()
     semantic_terms = set()
     
+    # 🔥 CRITICAL FIX: Include HARDCODED_MAP keys as business semantic terms
+    # This allows user queries like "revenue" to match even though the semantic layer
+    # only contains categories like "value"
+    from dbbuddy_core.mapping import HARDCODED_MAP
+    for business_term, semantic_category in HARDCODED_MAP.items():
+        semantic_terms.add(business_term.lower())
+        # Also split underscore-separated terms for partial matching
+        semantic_terms.update(business_term.lower().split("_"))
+    
     for table_name, columns in semantic.items():
         table_terms.add(table_name.lower())
         for col_name, col_info in columns.items():
@@ -325,37 +334,29 @@ def is_query_relevant(query: str, semantic: dict) -> dict:
     # Coverage threshold: at least 20% of tokens should be relevant
     threshold = 1.5 if token_count <= 6 else 2.0
     coverage_threshold = 0.2
-    
-    # 🔥 IMPROVED: Multi-tier relevance logic
-    # 1. Table match is strong signal, but requires minimum coverage to prevent noise bypass
-    # 2. Semantic match in short query (<=5 tokens) - accept (intent queries like "revenue", "sales")
-    # 3. Semantic match with aggregation intent (per/total) - accept (aggregation queries)
-    # 4. Otherwise, require sufficient score and coverage
+
+    # Relevance decision — any single match type is enough to accept the query.
+    # The old coverage gate (>= 0.3) was incorrectly rejecting short but valid
+    # queries like "Show users from India" where only 1 of 4 tokens matched.
     if len(table_matches) >= 1:
-        # Table match is a strong signal, but require minimum coverage to prevent noise bypass
-        if coverage >= 0.3:
-            relevant = True
-            logger.debug(f"is_query_relevant - ACCEPTED: Table match with sufficient coverage")
-        else:
-            # Table match but low coverage - reject as noise
-            relevant = False
-            logger.debug(f"is_query_relevant - REJECTED: Table match but low coverage (noise filtering)")
-    elif len(semantic_matches) >= 1 and token_count <= 5:
-        # Short query with semantic term - accept (intent-based queries)
+        # A table name match is a strong, unambiguous signal — always accept.
         relevant = True
-        logger.debug(f"is_query_relevant - ACCEPTED: Semantic match in short query")
-    elif len(semantic_matches) >= 1 and ("per" in tokens or "total" in tokens):
-        # Semantic match with aggregation intent - accept (aggregation queries)
+        logger.debug(f"is_query_relevant - ACCEPTED: table match ({table_matches})")
+    elif len(column_matches) >= 1:
+        # A column name match is also a reliable signal.
         relevant = True
-        logger.debug(f"is_query_relevant - ACCEPTED: Semantic match with aggregation intent (per/total)")
+        logger.debug(f"is_query_relevant - ACCEPTED: column match ({column_matches})")
+    elif len(semantic_matches) >= 1:
+        # Semantic / business-term match (e.g. "revenue", "sales").
+        relevant = True
+        logger.debug(f"is_query_relevant - ACCEPTED: semantic match ({semantic_matches})")
     elif score >= threshold and coverage >= coverage_threshold:
-        # Good score and coverage - accept
+        # Fallback: score+coverage based acceptance for edge cases.
         relevant = True
-        logger.debug(f"is_query_relevant - ACCEPTED: Score and coverage sufficient")
+        logger.debug(f"is_query_relevant - ACCEPTED: score/coverage ({score:.1f}/{coverage:.2f})")
     else:
-        # Low coverage and no strong signals - reject
         relevant = False
-        logger.debug(f"is_query_relevant - REJECTED: No strong signals (table={len(table_matches)}, semantic={len(semantic_matches)}, score={score}, coverage={coverage})")
+        logger.debug(f"is_query_relevant - REJECTED: no matches, score={score:.1f}, coverage={coverage:.2f}")
     
     # Calculate confidence based on score and query length
     max_possible_score = 2.0 * token_count  # If all tokens were table matches
@@ -811,15 +812,28 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
     # Generate term interpretation explanations
     term_interpretations = generate_term_interpretation(user_query, semantic, relevance_check)
 
-    # 🔥 CRITICAL: Check user intent for dangerous operations BEFORE SQL generation
-    # This prevents AI from dodging DELETE/UPDATE by generating SELECT instead
+    # 🔥 CRITICAL: Check user intent for dangerous operations BEFORE SQL generation.
+    # Short-circuit immediately — do NOT let the LLM produce a SELECT in place of
+    # the DELETE/UPDATE the user actually asked for.
     dangerous_keywords = {"delete", "update", "drop", "truncate", "alter", "insert"}
     user_intent_dangerous = any(keyword in user_query.lower() for keyword in dangerous_keywords)
     force_write_mode = user_intent_dangerous
-    
+
     if force_write_mode:
-        logger.warning(f"User intent detected as dangerous: {user_query}")
-        logger.warning("Forcing write mode and requiring confirmation regardless of generated SQL")
+        logger.warning(f"User intent detected as dangerous — short-circuiting before LLM: {user_query}")
+        return {
+            "query": user_query,
+            "sql": None,
+            "query_type": "write",
+            "auto_executed": False,
+            "requires_confirmation": True,
+            "warning": (
+                "This query involves data modification. "
+                "Please confirm your intent before execution."
+            ),
+            "confidence": "low",
+            "relevance_check": relevance_check,
+        }
 
     if config.ai_provider in ("local", "hybrid") and not is_ollama_running():
         logger.warning("Ollama not running. Falling back to Nemotron or OpenAI if available.")
@@ -946,7 +960,15 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
 
     if not schema_check["valid"]:
         logger.warning(f"Schema validation failed: {schema_check}")
-        # Attempt a fix before giving up — pass the validation failure as the error
+        # 🔥 FIX: For write queries, route to confirmation instead of failing
+        if query_type in WRITE_QUERIES:
+            logger.warning(f"Write query with schema validation issues - routing to confirmation")
+            response["auto_executed"] = False
+            response["warning"] = f"Generated SQL references unknown identifiers. Please review before execution."
+            response["requires_confirmation"] = True
+            response["confidence"] = calculate_confidence(response)
+            return response
+        # For read queries, attempt a fix before giving up
         hint = []
         if schema_check["unknown_tables"]:
             hint.append(f"Unknown tables: {schema_check['unknown_tables']}")
@@ -969,20 +991,22 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
     # Aggregation validation check
     if not aggregation_check["valid"]:
         logger.warning(f"Aggregation validation failed: {aggregation_check}")
-        response["auto_executed"] = False
+        if query_type in WRITE_QUERIES:
+            logger.warning(f"Write query with aggregation validation issues - routing to confirmation")
+            response["auto_executed"] = False
+            response["warning"] = f"Aggregation validation issue. Please review before execution."
+            response["requires_confirmation"] = True
+            response["confidence"] = calculate_confidence(response)
+            return response
+        # For SELECT queries: warn but continue — don't block valid SQL on a validator edge case
+        logger.warning("Aggregation issue on SELECT — downgrading confidence, continuing execution")
         response["warning"] = aggregation_check["error"]
-        response["confidence"] = calculate_confidence(response)
-        return response
+        response["confidence"] = "low"
+        # fall through — do NOT return here
 
     # Safety classification: READ vs WRITE
     safety_category, requires_confirmation = classify_query_safety(sql)
-    
-    # 🔥 CRITICAL: Force confirmation if user intent is dangerous, regardless of generated SQL
-    if force_write_mode:
-        requires_confirmation = True
-        safety_category = "write"
-        logger.warning(f"Overriding safety classification due to dangerous user intent: {safety_category}")
-    
+
     response["safety_category"] = safety_category
     response["requires_confirmation"] = requires_confirmation
 

@@ -120,9 +120,10 @@ type Message =
       text: string;
       headline?: string;
       sql: string;
-      status: "success" | "error" | "loading";
+      status: "success" | "error" | "loading" | "pending_confirmation";
       result?: QueryResult;
       error?: string;
+      warning?: string;
       sourceQuery?: string;
       autoFixed?: boolean;
       confidence?: "high" | "medium" | "low";
@@ -282,21 +283,23 @@ function DBBuddyApp() {
         return;
       }
 
-      // Non-SELECT: generated but held for approval
+      // Non-SELECT: generated but held for approval — show Run / Cancel
       if (!data.auto_executed) {
         setMessages((m) => m.map((msg) =>
           msg.id === loadingId
             ? {
                 ...msg,
-                status: "error" as const,
+                status: "pending_confirmation" as const,
                 sql: data.sql ?? "",
                 text: "",
-                error: data.warning ?? "This query may modify data. Review the SQL before executing.",
+                warning: data.warning ?? "This query will modify data. Review the SQL before executing.",
                 confidence: data.confidence ?? "medium",
                 aiProvider: db.engine,
+                sourceQuery: text,
               }
             : msg,
         ));
+        setSending(false);
         return;
       }
 
@@ -399,6 +402,69 @@ function DBBuddyApp() {
     if (sourceQuery) ask(sourceQuery);
   }
 
+  async function executeSQL(messageId: string, sql: string) {
+    const db = activeDbObj;
+    if (!db || !sql) return;
+
+    // Mark message as loading while executing
+    setMessages((m) => m.map((msg) =>
+      msg.id === messageId ? { ...msg, status: "loading" as const } : msg,
+    ));
+    setSending(true);
+
+    try {
+      const startMs = Date.now();
+      const res = await fetch("http://127.0.0.1:8000/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          host: db.host, user: db.user,
+          password: db.password, database: db.database,
+          sql,
+        }),
+      });
+      const data = await res.json();
+      const elapsedMs = Date.now() - startMs;
+
+      if (!res.ok || data.error) {
+        setMessages((m) => m.map((msg) =>
+          msg.id === messageId
+            ? { ...msg, status: "error" as const, error: data?.error ?? "Execution failed." }
+            : msg,
+        ));
+        return;
+      }
+
+      const rawRows: Record<string, unknown>[] = data.results ?? [];
+      const columns = rawRows.length > 0 ? Object.keys(rawRows[0]) : [];
+      const rows = rawRows.map((r) => columns.map((c) => r[c] as string | number));
+
+      setMessages((m) => m.map((msg) =>
+        msg.id === messageId
+          ? {
+              ...msg,
+              status: "success" as const,
+              text: `Executed successfully.`,
+              result: { columns, rows, timeMs: elapsedMs, source: db.name, semantic: [] },
+              confidence: "high" as const,
+            }
+          : msg,
+      ));
+    } catch (err) {
+      setMessages((m) => m.map((msg) =>
+        msg.id === messageId
+          ? { ...msg, status: "error" as const, error: err instanceof Error ? err.message : "Execution failed." }
+          : msg,
+      ));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  function dismissMessage(messageId: string) {
+    setMessages((m) => m.filter((msg) => msg.id !== messageId));
+  }
+
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
@@ -473,6 +539,8 @@ function DBBuddyApp() {
                           message={m}
                           onRegenerate={() => regenerate(m.sourceQuery)}
                           onEdit={() => m.sourceQuery && setInput(m.sourceQuery)}
+                          onConfirm={(sql) => executeSQL(m.id, sql)}
+                          onCancel={() => dismissMessage(m.id)}
                         />
                       ),
                     )}
@@ -875,11 +943,13 @@ function UserBubble({ text }: { text: string }) {
 }
 
 function AssistantBubble({
-  message, onRegenerate, onEdit,
+  message, onRegenerate, onEdit, onConfirm, onCancel,
 }: {
   message: Extract<Message, { role: "assistant" }>;
   onRegenerate: () => void;
   onEdit: () => void;
+  onConfirm: (sql: string) => void;
+  onCancel: () => void;
 }) {
   if (message.status === "loading") {
     return (
@@ -892,6 +962,44 @@ function AssistantBubble({
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
           </div>
           <span>AI is thinking — generating SQL…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (message.status === "pending_confirmation") {
+    return (
+      <div className="flex items-start gap-3">
+        <AssistantAvatar />
+        <div className="min-w-0 flex-1 space-y-3">
+          <div className="rounded-2xl rounded-tl-sm border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm">
+            <div className="mb-2 flex items-center gap-2">
+              <Badge className="border-0 bg-amber-500/20 text-amber-400 gap-1">
+                <AlertCircle className="h-3 w-3" /> Confirmation required
+              </Badge>
+            </div>
+            <p className="text-sm text-amber-200/80 mb-3">
+              {message.warning ?? "This query will modify data. Review the SQL below before running."}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                className="h-7 gap-1.5 text-xs bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+                onClick={() => onConfirm(message.sql)}
+              >
+                <Check className="h-3 w-3" /> Run query
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1.5 text-xs"
+                onClick={onCancel}
+              >
+                <X className="h-3 w-3" /> Cancel
+              </Button>
+            </div>
+          </div>
+          {message.sql && <SQLBlock sql={message.sql} />}
         </div>
       </div>
     );
@@ -1026,12 +1134,18 @@ function AssistantAvatar() {
   );
 }
 
-function StatusBadge({ status }: { status: "success" | "error" | "loading" }) {
+function StatusBadge({ status }: { status: "success" | "error" | "loading" | "pending_confirmation" }) {
   if (status === "success")
     return (
       <Badge className="border-0 bg-[oklch(0.72_0.17_155)]/15 text-[oklch(0.82_0.17_155)] hover:bg-[oklch(0.72_0.17_155)]/15">
         <Check className="mr-1 h-3 w-3" />
         Success
+      </Badge>
+    );
+  if (status === "pending_confirmation")
+    return (
+      <Badge className="border-0 bg-amber-500/20 text-amber-400">
+        <AlertCircle className="mr-1 h-3 w-3" /> Pending
       </Badge>
     );
   return (
