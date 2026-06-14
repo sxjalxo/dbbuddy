@@ -6,43 +6,44 @@ from dbbuddy_core.pipeline import process_query, calculate_confidence
 from dbbuddy_core.models import DBConfig
 
 
+@pytest.fixture(scope="module")
+def mock_schema():
+    """Mock database schema for testing."""
+    return {
+        "users": ["id", "name", "email", "created_at"],
+        "orders": ["id", "user_id", "total", "created_at"]
+    }
+
+@pytest.fixture(scope="module")
+def mock_semantic_layer():
+    """Mock semantic layer for testing."""
+    return {
+        "users": {
+            "id": {"term": "identifier"},
+            "name": {"term": "name"},
+            "email": {"term": "email"}
+        },
+        "orders": {
+            "id": {"term": "identifier"},
+            "user_id": {"term": "user identifier"}
+        }
+    }
+
+@pytest.fixture(scope="module")
+def mock_config():
+    """Mock database configuration."""
+    return DBConfig(
+        host="localhost",
+        user="test",
+        password="test",
+        database="testdb",
+        ai=True,
+        ai_provider="local"
+    )
+
+
 class TestQueryPipeline:
     """Test core query processing pipeline with new systems."""
-
-    @pytest.fixture
-    def mock_schema(self):
-        """Mock database schema for testing."""
-        return {
-            "users": ["id", "name", "email", "created_at"],
-            "orders": ["id", "user_id", "total", "created_at"]
-        }
-
-    @pytest.fixture
-    def mock_semantic_layer(self):
-        """Mock semantic layer for testing."""
-        return {
-            "users": {
-                "id": {"term": "identifier"},
-                "name": {"term": "name"},
-                "email": {"term": "email"}
-            },
-            "orders": {
-                "id": {"term": "identifier"},
-                "user_id": {"term": "user identifier"}
-            }
-        }
-
-    @pytest.fixture
-    def mock_config(self):
-        """Mock database configuration."""
-        return DBConfig(
-            host="localhost",
-            user="test",
-            password="test",
-            database="testdb",
-            ai=True,
-            ai_provider="local"
-        )
 
     def test_simple_select_query_structure(self, mock_config, mock_schema, mock_semantic_layer):
         """Test that simple select queries produce valid SQL structure."""
@@ -183,23 +184,24 @@ class TestQueryPipeline:
                         with patch('dbbuddy_core.pipeline.generate_sql') as mock_gen:
                             mock_gen.return_value = ("SELECT id FROM unknown_table;", "local")
                             with patch('dbbuddy_core.pipeline.validate_against_schema') as mock_val:
-                                mock_val.return_value = {
-                                    "valid": False,
-                                    "unknown_tables": ["unknown_table"],
-                                    "unknown_columns": [],
-                                    "invalid_joins": []
-                                }
+                                mock_val.side_effect = [
+                                    {
+                                        "valid": False,
+                                        "unknown_tables": ["unknown_table"],
+                                        "unknown_columns": [],
+                                        "invalid_joins": []
+                                    },
+                                    {"valid": True, "unknown_tables": [], "unknown_columns": [], "invalid_joins": []}
+                                ]
                                 with patch('dbbuddy_core.pipeline.fix_sql') as mock_fix:
                                     mock_fix.return_value = ("SELECT id FROM users;", "local")
-                                    with patch('dbbuddy_core.pipeline.validate_against_schema') as mock_val2:
-                                        mock_val2.return_value = {"valid": True, "unknown_tables": [], "unknown_columns": [], "invalid_joins": []}
-                                        with patch('dbbuddy_core.pipeline.safe_execute') as mock_exec:
-                                            mock_exec.return_value = {"success": True, "results": []}
-                                            
-                                            result = process_query(mock_config, "List from unknown")
-                                            
-                                            assert result["auto_fixed"] == True
-                                            assert "unknown_table" in result.get("original_error", "") or result.get("warning", "")
+                                    with patch('dbbuddy_core.pipeline.safe_execute') as mock_exec:
+                                        mock_exec.return_value = {"success": True, "results": []}
+                                        
+                                        result = process_query(mock_config, "List from unknown")
+                                        
+                                        assert result["auto_fixed"] == True
+                                        assert "unknown_table" in result.get("original_error", "") or result.get("warning", "")
 
     def test_end_to_end_query_pipeline(self, mock_config, mock_schema, mock_semantic_layer):
         """End-to-end test: validates complete pipeline from NL to SQL to execution.
@@ -264,10 +266,14 @@ class TestQueryPipeline:
 class TestPipelineChaos:
     """Chaos testing for full pipeline resilience - final boss test."""
 
-    @pytest.fixture
-    def mock_config(self):
-        """Mock database configuration."""
-        return DBConfig(
+    @given(st.text(min_size=1, max_size=200))
+    def test_full_pipeline_never_crashes(self, query):
+        """Property: Full pipeline should never crash on any input.
+        
+        This is the final boss test - combines all systems and tests
+        real-world resilience against chaotic input.
+        """
+        mock_config = DBConfig(
             host="localhost",
             user="test",
             password="test",
@@ -275,32 +281,17 @@ class TestPipelineChaos:
             ai=True,
             ai_provider="local"
         )
-
-    @pytest.fixture
-    def mock_schema(self):
-        """Mock database schema."""
-        return {
+        mock_schema = {
             "users": ["id", "name", "email"],
             "orders": ["id", "user_id", "total"]
         }
-
-    @pytest.fixture
-    def mock_semantic_layer(self):
-        """Mock semantic layer."""
-        return {
+        mock_semantic_layer = {
             "users": {
                 "id": {"term": "identifier"},
                 "name": {"term": "name"}
             }
         }
 
-    @given(st.text(min_size=1, max_size=200))
-    def test_full_pipeline_never_crashes(self, mock_config, mock_schema, mock_semantic_layer, query):
-        """Property: Full pipeline should never crash on any input.
-        
-        This is the final boss test - combines all systems and tests
-        real-world resilience against chaotic input.
-        """
         with patch('dbbuddy_core.pipeline.db_module.connect_db') as mock_conn:
             mock_conn.return_value = MagicMock()
             with patch('dbbuddy_core.pipeline.schema_module.fetch_schema') as mock_fetch:
@@ -664,20 +655,33 @@ class TestQuerySafety:
                     mock_map.return_value = mock_semantic_layer
                     with patch('dbbuddy_core.pipeline.ai_refine') as mock_ai:
                         mock_ai.return_value = mock_semantic_layer
-                        with patch('dbbuddy_core.pipeline.generate_sql') as mock_gen:
-                            # Generate SQL with GROUP BY violation AND joins
-                            mock_gen.return_value = ("SELECT u.name, SUM(o.amount), o.status FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.id", "local")
-                            with patch('dbbuddy_core.pipeline.validate_against_schema') as mock_val:
-                                mock_val.return_value = {"valid": True, "unknown_tables": [], "unknown_columns": [], "invalid_joins": []}
-                                
-                                result = process_query(mock_config, "Top customers by spending")
-                                
-                                # Should fail aggregation validation
-                                assert result["auto_executed"] is False
-                                assert "aggregation_validation" in result
-                                assert result["aggregation_validation"]["valid"] is False
-                                assert result["warning"] is not None
-                                assert "GROUP BY violation" in result["warning"]
+                        with patch('dbbuddy_core.pipeline.is_query_relevant') as mock_rel:
+                            mock_rel.return_value = {
+                                "relevant": True,
+                                "reason": "mocked",
+                                "confidence": 1.0,
+                                "score": 10.0,
+                                "coverage": 1.0,
+                                "matched_terms": [],
+                                "significant_matches": [],
+                                "table_matches": [],
+                                "column_matches": [],
+                                "semantic_matches": []
+                            }
+                            with patch('dbbuddy_core.pipeline.generate_sql') as mock_gen:
+                                # Generate SQL with GROUP BY violation AND joins
+                                mock_gen.return_value = ("SELECT u.name, SUM(o.amount), o.status FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.id", "local")
+                                with patch('dbbuddy_core.pipeline.validate_against_schema') as mock_val:
+                                    mock_val.return_value = {"valid": True, "unknown_tables": [], "unknown_columns": [], "invalid_joins": []}
+                                    
+                                    result = process_query(mock_config, "Top customers by spending")
+                                    
+                                    # Should fail aggregation validation
+                                    assert result["auto_executed"] is False
+                                    assert "aggregation_validation" in result
+                                    assert result["aggregation_validation"]["valid"] is False
+                                    assert result["warning"] is not None
+                                    assert "GROUP BY violation" in result["warning"]
 
     def test_is_query_relevant_valid(self):
         """Test relevance detection with database-related queries using weighted scoring."""
@@ -765,8 +769,8 @@ class TestQuerySafety:
         }
         
         # Edge case: one strong match but low coverage (no table match)
-        # "id something random blah blah" - has "id" but most tokens are irrelevant
-        result = is_query_relevant("id something random blah blah", semantic)
+        # "id something random blah blah blah" - has "id" but most tokens are irrelevant (1 match / 6 tokens = 16.7%)
+        result = is_query_relevant("id something random blah blah blah", semantic)
         
         # Should have some score but low coverage (< 20%)
         assert result["score"] >= 1.5  # Column match = 1.5

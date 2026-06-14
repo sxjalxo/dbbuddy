@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";import {
   MessageSquare, History, Database, Settings, Plus, Send, Mic, Copy, Bookmark,
   Check, ChevronDown, ChevronRight, Sparkles, Table as TableIcon, BarChart3,
   Braces, Sun, Moon, Clock, Rows, CircleDot, Loader2, AlertCircle, X,
-  RefreshCw, Pencil, ArrowRight, Download, Search,
+  RefreshCw, Pencil, ArrowRight, Download, Search, Columns, ArrowLeftRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,6 +19,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from "recharts";
@@ -110,6 +111,8 @@ type QueryResult = {
   timeMs: number;
   source: string;
   semantic: { from: string; to: string }[];
+  termInterpretations?: { term: string; mapped_to: string; type: string }[];
+  relevanceReason?: string;
 };
 
 type Message =
@@ -296,6 +299,15 @@ function DBBuddyApp() {
                 confidence: data.confidence ?? "medium",
                 aiProvider: db.engine,
                 sourceQuery: text,
+                result: {
+                  columns: [],
+                  rows: [],
+                  timeMs: 0,
+                  source: db.name,
+                  semantic: [],
+                  termInterpretations: data.term_interpretations,
+                  relevanceReason: data.relevance_check?.reason,
+                }
               }
             : msg,
         ));
@@ -329,7 +341,15 @@ function DBBuddyApp() {
               text: data.auto_fixed
                 ? "Query was automatically repaired and re-executed."
                 : `Here are the results for: "${text}"`,
-              result: { columns, rows, timeMs: elapsedMs, source: db.name, semantic },
+              result: {
+                columns,
+                rows,
+                timeMs: elapsedMs,
+                source: db.name,
+                semantic,
+                termInterpretations: data.term_interpretations,
+                relevanceReason: data.relevance_check?.reason,
+              },
               confidence: data.confidence ?? "high",
               autoFixed: data.auto_fixed ?? false,
               aiProvider: "hybrid",
@@ -429,12 +449,37 @@ function DBBuddyApp() {
       if (!res.ok || data.error) {
         setMessages((m) => m.map((msg) =>
           msg.id === messageId
-            ? { ...msg, status: "error" as const, error: data?.error ?? "Execution failed." }
+            ? { ...msg, status: "error" as const, error: data?.detail ?? data?.error ?? "Execution failed." }
             : msg,
         ));
         return;
       }
 
+      // Write query (DELETE/UPDATE/INSERT) — no result rows, just rows_affected
+      if (data.write) {
+        setMessages((m) => m.map((msg) =>
+          msg.id === messageId
+            ? {
+                ...msg,
+                status: "success" as const,
+                text: data.message ?? "Query executed successfully.",
+                result: {
+                  columns: ["rows_affected"],
+                  rows: [[data.rows_affected ?? 0]],
+                  timeMs: elapsedMs,
+                  source: db.name,
+                  semantic: [],
+                  termInterpretations: msg.role === "assistant" ? msg.result?.termInterpretations : undefined,
+                  relevanceReason: msg.role === "assistant" ? msg.result?.relevanceReason : undefined,
+                },
+                confidence: "high" as const,
+              }
+            : msg,
+        ));
+        return;
+      }
+
+      // SELECT — normal result set
       const rawRows: Record<string, unknown>[] = data.results ?? [];
       const columns = rawRows.length > 0 ? Object.keys(rawRows[0]) : [];
       const rows = rawRows.map((r) => columns.map((c) => r[c] as string | number));
@@ -444,8 +489,16 @@ function DBBuddyApp() {
           ? {
               ...msg,
               status: "success" as const,
-              text: `Executed successfully.`,
-              result: { columns, rows, timeMs: elapsedMs, source: db.name, semantic: [] },
+              text: "Executed successfully.",
+              result: {
+                columns,
+                rows,
+                timeMs: elapsedMs,
+                source: db.name,
+                semantic: [],
+                termInterpretations: msg.role === "assistant" ? msg.result?.termInterpretations : undefined,
+                relevanceReason: msg.role === "assistant" ? msg.result?.relevanceReason : undefined,
+              },
               confidence: "high" as const,
             }
           : msg,
@@ -1099,6 +1152,14 @@ function AssistantBubble({
                 </div>
               ) : null}
 
+              {/* Term Interpretation Section */}
+              {message.result.termInterpretations && message.result.termInterpretations.length > 0 && (
+                <TermInterpretationSection
+                  interpretations={message.result.termInterpretations}
+                  messageId={message.id}
+                />
+              )}
+
               {/* Metadata Grid */}
               <div className="grid grid-cols-3 gap-2">
                 <div className="rounded-md border border-border bg-background/50 px-2 py-1.5">
@@ -1123,6 +1184,72 @@ function AssistantBubble({
         {message.result && <ResultsView result={message.result} messageId={message.id} />}
       </div>
     </div>
+  );
+}
+
+// ---------- Term Interpretation Section ----------
+function TermInterpretationSection({
+  interpretations,
+  messageId,
+}: {
+  interpretations: { term: string; mapped_to: string; type: string }[];
+  messageId: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  function typeIcon(type: string) {
+    if (type === "table") return <TableIcon className="h-3 w-3 text-primary" />;
+    if (type === "column") return <Columns className="h-3 w-3 text-blue-400" />;
+    return <ArrowLeftRight className="h-3 w-3 text-amber-400" />;
+  }
+
+  function typeLabel(type: string) {
+    if (type === "table") return "(table)";
+    if (type === "column") return "(column)";
+    return "(semantic)";
+  }
+
+  function typeBadgeClass(type: string) {
+    if (type === "table") return "border-primary/30 text-primary";
+    if (type === "column") return "border-blue-400/30 text-blue-400";
+    return "border-amber-400/30 text-amber-400";
+  }
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger asChild>
+        <button className="flex w-full items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors">
+          {open ? (
+            <ChevronDown className="h-3 w-3 shrink-0" />
+          ) : (
+            <ChevronRight className="h-3 w-3 shrink-0" />
+          )}
+          <Sparkles className="h-3 w-3" />
+          How DB Buddy interpreted your query
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="mt-2 flex flex-col gap-1">
+          {interpretations.map((interp, i) => (
+            <div
+              key={`${messageId}-interp-${i}`}
+              className="flex items-center gap-1.5 rounded-md border border-border bg-background/50 px-2 py-1 font-mono text-[10.5px]"
+            >
+              {typeIcon(interp.type)}
+              <span className="text-muted-foreground">{interp.term}</span>
+              <ArrowRight className="h-2.5 w-2.5 text-muted-foreground/60 shrink-0" />
+              <span className="text-foreground/80">{interp.mapped_to}</span>
+              <Badge
+                variant="outline"
+                className={cn("ml-auto h-4 px-1 text-[9px] leading-none", typeBadgeClass(interp.type))}
+              >
+                {typeLabel(interp.type)}
+              </Badge>
+            </div>
+          ))}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -1503,6 +1630,37 @@ function RightPanel({
           <Metric icon={Clock} label="Time taken" value={`${result.timeMs} ms`} />
           <Metric icon={Rows} label="Rows returned" value={result.rows.length.toLocaleString()} />
           <Metric icon={Database} label="Data source" value={result.source} />
+
+          {/* Understanding Layer */}
+          {((result.termInterpretations && result.termInterpretations.length > 0) || result.relevanceReason) && (
+            <div className="flex flex-col gap-3 border-t border-border pt-4">
+              <div className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Understanding Layer
+              </div>
+              
+              {result.termInterpretations && result.termInterpretations.length > 0 && (
+                <div className="flex flex-col gap-1.5">
+                  {result.termInterpretations.map((ti, index) => (
+                    <div
+                      key={index}
+                      className="flex items-center justify-between rounded-md border border-border bg-background/50 px-3 py-2 font-mono text-xs"
+                    >
+                      <span className="text-muted-foreground">{ti.term}</span>
+                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span className="text-foreground">{ti.mapped_to}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {result.relevanceReason && (
+                <div className="rounded-md border border-border bg-background/30 p-2.5 text-xs text-muted-foreground">
+                  <div className="font-semibold text-foreground/80 mb-1">Relevance Reasoning</div>
+                  <div>{result.relevanceReason}</div>
+                </div>
+              )}
+            </div>
+          )}
 
           <div>
             <div className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">

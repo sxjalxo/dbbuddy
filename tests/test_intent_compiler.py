@@ -4,27 +4,28 @@ from hypothesis import given, strategies as st
 from dbbuddy_core.query import compile_sql_from_intent
 
 
+@pytest.fixture
+def sample_schema():
+    """Sample database schema for testing."""
+    return {
+        "users": ["id", "name", "email", "created_at"],
+        "orders": ["id", "user_id", "total", "created_at"],
+        "products": ["id", "name", "price"]
+    }
+
+@pytest.fixture
+def sample_relationships():
+    """Sample relationship graph for testing."""
+    return {
+        "orders": {
+            "user_id": ("users", "id")
+        },
+        "products": {}
+    }
+
+
 class TestIntentCompiler:
     """Test deterministic SQL compilation from intent structure."""
-
-    @pytest.fixture
-    def sample_schema(self):
-        """Sample database schema for testing."""
-        return {
-            "users": ["id", "name", "email", "created_at"],
-            "orders": ["id", "user_id", "total", "created_at"],
-            "products": ["id", "name", "price"]
-        }
-
-    @pytest.fixture
-    def sample_relationships(self):
-        """Sample relationship graph for testing."""
-        return {
-            "orders": {
-                "user_id": ("users", "id")
-            },
-            "products": {}
-        }
 
     def test_compile_simple_intent(self, sample_schema):
         """Test compilation of simple single-table intent."""
@@ -116,9 +117,8 @@ class TestIntentCompiler:
         
         sql = compile_sql_from_intent(intent, sample_schema)
         
-        # Should not add joins without relationship graph
-        assert sql.startswith("SELECT")
-        assert "FROM users" in sql
+        # Should return failure sentinel when relationships is not provided and confidence is low
+        assert sql == "SELECT * FROM unknown;"
 
     def test_compile_empty_intent(self, sample_schema):
         """Test compilation with empty intent."""
@@ -241,6 +241,70 @@ class TestIntentCompiler:
         sql = compile_sql_from_intent(intent, sample_schema)
         
         assert "*" in sql
+
+    def test_confidence_scoring_fallback(self, sample_schema):
+        """Test that confidence scoring fallback triggers when confidence < 0.5."""
+        intent = {
+            "tables": ["users", "products"],  # no relationships between them in sample_relationships
+            "columns": ["id"],
+            "filters": []
+        }
+        relationships = {"orders": {"user_id": ("users", "id")}}
+        sql = compile_sql_from_intent(intent, sample_schema, relationships)
+        assert sql == "SELECT * FROM unknown;"
+
+    def test_bidirectional_join_path_bfs(self, sample_schema):
+        """Test bidirectional join path BFS that connects referencing to referenced and vice-versa."""
+        relationships = {
+            "orders": {
+                "user_id": ("users", "id"),
+                "product_id": ("products", "id")
+            }
+        }
+        intent = {
+            "tables": ["products", "users"],
+            "columns": ["name"],
+            "filters": []
+        }
+        sql = compile_sql_from_intent(intent, sample_schema, relationships)
+        assert "JOIN orders" in sql
+        assert "ON" in sql
+
+    def test_aggregation_terms_robustness(self, sample_schema):
+        """Test robust aggregation keyword detection list (revenue, avg, sales, generated)."""
+        intent = {
+            "tables": ["users"],
+            "columns": [],
+            "filters": []
+        }
+        # wants_sum due to 'revenue'
+        sql_sum = compile_sql_from_intent(intent, sample_schema, user_query="Show total revenue for users")
+        assert "SUM(" in sql_sum or "COUNT(" in sql_sum
+
+        # wants_avg due to 'average'
+        sql_avg = compile_sql_from_intent(intent, sample_schema, user_query="What is the average price of products")
+        assert "AVG(" in sql_avg or "COUNT(" in sql_avg
+
+    def test_composable_accumulative_where_filters(self):
+        """Test that filters (time, country, status, numeric) accumulate composably."""
+        custom_schema = {
+            "users": ["id", "name", "email", "country", "status", "created_at"]
+        }
+        intent = {
+            "tables": ["users"],
+            "columns": ["id"],
+            "filters": []
+        }
+        # India (country) + active (status) + last month (time)
+        sql = compile_sql_from_intent(
+            intent, 
+            custom_schema, 
+            user_query="users from india who are active from last month"
+        )
+        assert "WHERE" in sql
+        assert "country = 'India'" in sql
+        assert "status = 'active'" in sql
+        assert "created_at >= DATE_SUB(CURDATE()" in sql
 
 
 class TestIntentCompilerFuzzing:

@@ -90,7 +90,32 @@ def execute(req: ExecuteRequest):
         if conn is None:
             raise RuntimeError("Unable to connect to the database.")
 
-        results = run_query(conn, req.sql)
-        return {"results": results}
+        # Enable autocommit to prevent lock timeouts on write queries.
+        # Each statement is its own transaction — no lingering locks.
+        try:
+            conn.autocommit = True
+        except Exception:
+            pass
+
+        try:
+            results = run_query(conn, req.sql)
+        finally:
+            # Always close the connection after execution to release all locks.
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        # Detect write result — execute_query returns [{rows_affected: N}] for writes
+        if results and "rows_affected" in results[0]:
+            rows_affected = results[0]["rows_affected"]
+            return {
+                "results": [],
+                "rows_affected": rows_affected,
+                "message": f"Query executed successfully. {rows_affected} row(s) affected.",
+                "write": True,
+            }
+
+        return {"results": results, "write": False}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

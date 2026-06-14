@@ -56,8 +56,12 @@ def classify_query_safety(sql: str) -> tuple[str, bool]:
         return "write", True
 
 
-def generate_warning(sql: str) -> str:
-    """Generate intelligent warning for write operations."""
+def generate_warning(sql: str, relationship_graph: dict | None = None) -> str:
+    """Generate intelligent warning for write operations.
+    
+    When relationship_graph is provided, DELETE warnings include the names of
+    dependent child tables so the user understands the full blast radius.
+    """
     sql_lower = sql.lower()
     
     # Extract table name for more specific warnings
@@ -69,7 +73,20 @@ def generate_warning(sql: str) -> str:
     elif "drop" in sql_lower:
         return f"🚨 This query will DROP '{table_name}'. This action cannot be undone."
     elif "delete" in sql_lower:
-        return f"⚠️ This query will DELETE rows from '{table_name}'. This action cannot be undone."
+        base = f"⚠️ This query will DELETE rows from '{table_name}'. This action cannot be undone."
+        # Add dependent-table context when graph is available
+        if relationship_graph:
+            child_tables = [
+                tbl for tbl, fks in relationship_graph.items()
+                if tbl.lower() != table_name.lower()
+                and any(ref_tbl.lower() == table_name.lower() for _, (ref_tbl, _) in fks.items())
+            ]
+            if child_tables:
+                base += (
+                    f"\n🔗 Related records in {', '.join(child_tables)} will also be deleted "
+                    f"(child rows are removed first to satisfy foreign key constraints)."
+                )
+        return base
     elif "truncate" in sql_lower:
         return f"🚨 This query will TRUNCATE the table '{table_name}', removing all data instantly."
     elif "update" in sql_lower:
@@ -198,7 +215,7 @@ def generate_term_interpretation(query: str, semantic: dict, relevance_check: di
             if term == table_name.lower():
                 interpretations.append({
                     "term": term,
-                    "mapped_to": f"table: {table_name}",
+                    "mapped_to": f"{table_name.lower()} table",
                     "type": "table"
                 })
                 continue
@@ -335,28 +352,36 @@ def is_query_relevant(query: str, semantic: dict) -> dict:
     threshold = 1.5 if token_count <= 6 else 2.0
     coverage_threshold = 0.2
 
-    # Relevance decision — any single match type is enough to accept the query.
-    # The old coverage gate (>= 0.3) was incorrectly rejecting short but valid
-    # queries like "Show users from India" where only 1 of 4 tokens matched.
+    # Relevance decision.
     if len(table_matches) >= 1:
-        # A table name match is a strong, unambiguous signal — always accept.
+        # Table match is a strong signal, but reject if the query is long with very
+        # low coverage AND has no column/semantic matches — protects against
+        # "users random nonsense blah blah" type queries.
+        # Exclude common stop words from the token count when measuring coverage
+        # so "List all users with their emails" (6 tokens, many stop words) isn't penalized.
+        _stop_words = {
+            'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'have', 'has', 'had',
+            'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might',
+            'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'and', 'or',
+            'but', 'if', 'all', 'their', 'its', 'show', 'list', 'get', 'give', 'tell',
+            'me', 'my', 'i', 'you', 'we', 'they', 'it', 'this', 'that', 'these', 'those',
+        }
+        meaningful_tokens = [t for t in tokens if t not in _stop_words]
+        meaningful_count = max(len(meaningful_tokens), 1)
+        meaningful_coverage = len(all_matches) / meaningful_count
+
+        if meaningful_count > 3 and meaningful_coverage < 0.25 and not column_matches and not semantic_matches:
+            relevant = False
+            logger.debug(f"is_query_relevant - REJECTED: table match but too many nonsense tokens (meaningful_coverage={meaningful_coverage:.1%})")
+        else:
+            relevant = True
+            logger.debug(f"is_query_relevant - ACCEPTED: table match")
+    elif token_count <= 5 and (len(column_matches) >= 1 or len(semantic_matches) >= 1):
         relevant = True
-        logger.debug(f"is_query_relevant - ACCEPTED: table match ({table_matches})")
-    elif len(column_matches) >= 1:
-        # A column name match is also a reliable signal.
-        relevant = True
-        logger.debug(f"is_query_relevant - ACCEPTED: column match ({column_matches})")
-    elif len(semantic_matches) >= 1:
-        # Semantic / business-term match (e.g. "revenue", "sales").
-        relevant = True
-        logger.debug(f"is_query_relevant - ACCEPTED: semantic match ({semantic_matches})")
-    elif score >= threshold and coverage >= coverage_threshold:
-        # Fallback: score+coverage based acceptance for edge cases.
-        relevant = True
-        logger.debug(f"is_query_relevant - ACCEPTED: score/coverage ({score:.1f}/{coverage:.2f})")
+        logger.debug(f"is_query_relevant - ACCEPTED: short query with column/semantic match")
     else:
-        relevant = False
-        logger.debug(f"is_query_relevant - REJECTED: no matches, score={score:.1f}, coverage={coverage:.2f}")
+        relevant = score >= threshold and coverage >= coverage_threshold
+        logger.debug(f"is_query_relevant - DECISION: {relevant} based on score/coverage")
     
     # Calculate confidence based on score and query length
     max_possible_score = 2.0 * token_count  # If all tokens were table matches
@@ -381,8 +406,33 @@ def is_query_relevant(query: str, semantic: dict) -> dict:
     if significant_matches:
         confidence = min(confidence + 0.2, 1.0)
     
+    # ── Explainable Relevance Reason ──────────────────────────────────────
+    reasons = []
+    if table_matches:
+        reasons.append(f"table(s) '{', '.join(table_matches)}'")
+    if column_matches:
+        reasons.append(f"column(s) '{', '.join(column_matches)}'")
+    if semantic_matches:
+        reasons.append(f"semantic term(s) '{', '.join(semantic_matches)}'")
+        
+    if relevant:
+        if reasons:
+            reason = f"Matched {f' and '.join(reasons)}"
+        else:
+            # Build reason from matched tokens when no explicit reasons bucket was populated
+            if all_matches:
+                reason = f"Matched {', '.join(all_matches[:5])}"
+            else:
+                reason = "Matched terms across schema with sufficient coverage."
+    else:
+        if len(table_matches) >= 1:
+            reason = f"Matched table '{table_matches[0]}' but query coverage was too low ({coverage:.1%})"
+        else:
+            reason = "No matching tables, columns, or semantic terms found in the schema."
+            
     return {
         "relevant": relevant,
+        "reason": reason,
         "confidence": confidence,
         "score": score,
         "coverage": coverage,
@@ -517,41 +567,47 @@ def calculate_confidence(response: dict) -> str:
     """Calculate real confidence score based on multiple factors with reasoning."""
     score = 100  # Start with perfect score
     reasoning = []
-    
+
+    # ── Deterministic paths are always high confidence ────────────────────
+    # These never hallucinate — short-circuit the scoring entirely.
+    if response.get("model_used") in ("deterministic", "deterministic_intent", "semantic"):
+        response["confidence_reasoning"] = [f"Deterministic SQL ({response['model_used']}) — no LLM involved"]
+        return "high"
+
     # Deduct for model used (local is better than fallback)
     if response.get("model_used") == "nemotron":
-        score -= 20
+        score -= 30
         reasoning.append("Using fallback model (Nemotron)")
     elif response.get("model_used") == "unknown":
-        score -= 50
+        score -= 55
         reasoning.append("Unknown model used")
-    
+
     # Deduct for schema validation issues
     if not response.get("schema_validation", {}).get("valid", True):
         score -= 30
         reasoning.append("Schema validation failed")
-    
+
     # Deduct for auto-fix applied
     if response.get("auto_fixed", False):
-        score -= 15
+        score -= 25
         reasoning.append("SQL was auto-fixed")
-    
+
     # Deduct for execution errors
     if response.get("error"):
         score -= 40
         reasoning.append("Execution error occurred")
-    
+
     # Deduct for invalid query type
     if response.get("query_type") == "invalid":
         score -= 60
         reasoning.append("Invalid query type")
-    
+
     # Deduct for complex joins
     join_count = len(response.get("join_reasoning", []))
     if join_count > 2:
         score -= 10
         reasoning.append(f"Complex multi-table join ({join_count} relationships)")
-    
+
     # Convert score to confidence level
     if score >= 80:
         confidence = "high"
@@ -559,7 +615,7 @@ def calculate_confidence(response: dict) -> str:
         confidence = "medium"
     else:
         confidence = "low"
-    
+
     # Add reasoning to response for transparency
     if reasoning:
         response["confidence_reasoning"] = reasoning
@@ -806,39 +862,40 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
             "error": "This doesn't appear to be a database query.",
             "suggestion": "Try asking about your data (e.g., 'total sales', 'users', 'orders').",
             "relevance_check": relevance_check,
+            "term_interpretations": [],
             "confidence": "low"
         }
 
     # Generate term interpretation explanations
     term_interpretations = generate_term_interpretation(user_query, semantic, relevance_check)
 
-    # 🔥 CRITICAL: Check user intent for dangerous operations BEFORE SQL generation.
-    # Short-circuit immediately — do NOT let the LLM produce a SELECT in place of
-    # the DELETE/UPDATE the user actually asked for.
+    # Detect dangerous intent — we still generate SQL so the user can review
+    # and confirm the exact statement. Without SQL, the Run button has nothing to execute.
     dangerous_keywords = {"delete", "update", "drop", "truncate", "alter", "insert"}
     user_intent_dangerous = any(keyword in user_query.lower() for keyword in dangerous_keywords)
     force_write_mode = user_intent_dangerous
-
-    if force_write_mode:
-        logger.warning(f"User intent detected as dangerous — short-circuiting before LLM: {user_query}")
-        return {
-            "query": user_query,
-            "sql": None,
-            "query_type": "write",
-            "auto_executed": False,
-            "requires_confirmation": True,
-            "warning": (
-                "This query involves data modification. "
-                "Please confirm your intent before execution."
-            ),
-            "confidence": "low",
-            "relevance_check": relevance_check,
-        }
 
     if config.ai_provider in ("local", "hybrid") and not is_ollama_running():
         logger.warning("Ollama not running. Falling back to Nemotron or OpenAI if available.")
 
     sql, model_used = generate_sql(user_query, semantic, provider=config.ai_provider, schema=schema)
+
+    # After generation — if dangerous intent, hold for confirmation with the real SQL
+    if force_write_mode:
+        logger.warning(f"User intent dangerous — holding for confirmation: {user_query}")
+        if not sql or sql.strip().lower() in ("unknown", "invalid", ""):
+            # SQL generation failed for the write query — surface the error
+            return {
+                "query": user_query,
+                "sql": None,
+                "query_type": "write",
+                "auto_executed": False,
+                "requires_confirmation": False,
+                "error": "Could not generate a valid SQL statement for this query. Try being more specific.",
+                "confidence": "low",
+                "relevance_check": relevance_check,
+                "term_interpretations": term_interpretations,
+            }
     
     # 🔥 CRITICAL: Validate SQL immediately after generation - hard return if invalid
     if not sql or not sql.strip():
@@ -850,7 +907,9 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
             "auto_executed": False,
             "error": "SQL generation failed. The model could not produce a valid query. Try rephrasing your question.",
             "confidence": "low",
-            "requires_confirmation": False  # Force false on error
+            "requires_confirmation": False,  # Force false on error
+            "relevance_check": relevance_check,
+            "term_interpretations": term_interpretations,
         }
     
     sql_lower = sql.strip().lower()
@@ -863,7 +922,9 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
             "auto_executed": False,
             "error": "SQL generation failed. The model could not produce a valid query. Try rephrasing your question.",
             "confidence": "low",
-            "requires_confirmation": False  # Force false on error
+            "requires_confirmation": False,  # Force false on error
+            "relevance_check": relevance_check,
+            "term_interpretations": term_interpretations,
         }
     
     query_type = get_query_type(sql)
@@ -877,7 +938,9 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
             "auto_executed": False,
             "error": "SQL generation failed. The model could not produce a valid query. Try rephrasing your question.",
             "confidence": "low",
-            "requires_confirmation": False  # Force false on error
+            "requires_confirmation": False,  # Force false on error
+            "relevance_check": relevance_check,
+            "term_interpretations": term_interpretations,
         }
     
     # Generate intent explanation for the query
@@ -1006,6 +1069,9 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
 
     # Safety classification: READ vs WRITE
     safety_category, requires_confirmation = classify_query_safety(sql)
+    if force_write_mode:
+        requires_confirmation = True
+        safety_category = "write"
 
     response["safety_category"] = safety_category
     response["requires_confirmation"] = requires_confirmation
@@ -1013,7 +1079,11 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
     if requires_confirmation:
         # WRITE queries require user confirmation
         response["auto_executed"] = False
-        response["warning"] = generate_warning(sql)
+
+        # Build relationship graph for relationship-aware warning messages
+        from dbbuddy_core.query import build_relationship_graph as _build_rel_graph
+        _rel_graph = _build_rel_graph(schema)
+        response["warning"] = generate_warning(sql, relationship_graph=_rel_graph)
         
         # Add dry run estimate for DELETE/UPDATE queries
         dry_run = get_dry_run_estimate(sql, conn)
@@ -1048,7 +1118,21 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
         if execution["success"]:
             response["auto_executed"] = True
             response["results"] = execution["results"]
-            response["confidence"] = calculate_confidence(response)
+
+            # ── Silent failure detection ──────────────────────────────────
+            # A JOIN query returning 0 rows is suspicious — it could be a
+            # semantic mismatch or a filter that's too strict. Downgrade
+            # confidence so the user is alerted rather than silently misled.
+            has_joins = "join" in sql.lower()
+            has_results = len(execution["results"]) > 0
+            if has_joins and not has_results:
+                response["confidence"] = "low"
+                response["warning"] = (
+                    "⚠️ Query returned 0 rows — this may indicate a semantic mismatch, "
+                    "an overly strict filter, or no matching data exists."
+                )
+            else:
+                response["confidence"] = calculate_confidence(response)
             return response
 
         fixed_sql, fix_model = fix_sql(execution["error"], sql, semantic, provider=config.ai_provider)
