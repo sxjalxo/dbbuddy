@@ -69,11 +69,11 @@ def generate_warning(sql: str, relationship_graph: dict | None = None) -> str:
     table_name = table_match.group(1) or table_match.group(2) or table_match.group(3) if table_match else "the database"
     
     if "drop" in sql_lower and "table" in sql_lower:
-        return f"🚨 This query will DROP the table '{table_name}'. All data will be permanently lost and cannot be recovered."
+        return f"This query will DROP the table '{table_name}'. All data will be permanently lost and cannot be recovered."
     elif "drop" in sql_lower:
-        return f"🚨 This query will DROP '{table_name}'. This action cannot be undone."
+        return f"This query will DROP '{table_name}'. This action cannot be undone."
     elif "delete" in sql_lower:
-        base = f"⚠️ This query will DELETE rows from '{table_name}'. This action cannot be undone."
+        base = f"This query will DELETE rows from '{table_name}'. This action cannot be undone."
         # Add dependent-table context when graph is available
         if relationship_graph:
             child_tables = [
@@ -83,24 +83,24 @@ def generate_warning(sql: str, relationship_graph: dict | None = None) -> str:
             ]
             if child_tables:
                 base += (
-                    f"\n🔗 Related records in {', '.join(child_tables)} will also be deleted "
+                    f"\nRelated records in {', '.join(child_tables)} will also be deleted "
                     f"(child rows are removed first to satisfy foreign key constraints)."
                 )
         return base
     elif "truncate" in sql_lower:
-        return f"🚨 This query will TRUNCATE the table '{table_name}', removing all data instantly."
+        return f"This query will TRUNCATE the table '{table_name}', removing all data instantly."
     elif "update" in sql_lower:
-        return f"⚠️ This query will UPDATE existing records in '{table_name}'. Ensure conditions are correct to avoid unintended changes."
+        return f"This query will UPDATE existing records in '{table_name}'. Ensure conditions are correct to avoid unintended changes."
     elif "insert" in sql_lower:
-        return f"⚠️ This query will INSERT new data into '{table_name}'."
+        return f"This query will INSERT new data into '{table_name}'."
     elif "alter" in sql_lower:
-        return f"⚠️ This query will ALTER the structure of '{table_name}'. This may affect existing data and applications."
+        return f"This query will ALTER the structure of '{table_name}'. This may affect existing data and applications."
     elif "grant" in sql_lower or "revoke" in sql_lower:
-        return f"⚠️ This query will modify access permissions. This affects database security."
+        return f"This query will modify access permissions. This affects database security."
     elif "create" in sql_lower:
-        return f"⚠️ This query will CREATE a new object in the database."
-    
-    return "⚠️ This query may modify the database structure or data."
+        return f"This query will CREATE a new object in the database."
+
+    return "This query may modify the database structure or data."
 
 
 def generate_count_query(sql: str) -> str | None:
@@ -1094,11 +1094,11 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
             
             # Add row count information
             if estimated == 0:
-                response["warning"] += f"\nℹ️ This query will affect 0 rows (no data will be changed)."
+                response["warning"] += f"\nThis query will affect 0 rows (no data will be changed)."
             elif estimated == 1:
-                response["warning"] += f"\n⚠️ This will affect 1 row."
+                response["warning"] += f"\nThis will affect 1 row."
             else:
-                response["warning"] += f"\n⚠️ This will affect {estimated} rows."
+                response["warning"] += f"\nThis will affect {estimated} rows."
             
             # Add affected columns for UPDATE queries
             if "affected_columns" in dry_run:
@@ -1128,7 +1128,7 @@ def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs
             if has_joins and not has_results:
                 response["confidence"] = "low"
                 response["warning"] = (
-                    "⚠️ Query returned 0 rows — this may indicate a semantic mismatch, "
+                    "Query returned 0 rows — this may indicate a semantic mismatch, "
                     "an overly strict filter, or no matching data exists."
                 )
             else:

@@ -4,10 +4,14 @@
 
 ## Key highlights
 
-- 🧠 **Semantic-layer grounded SQL** — every query is built against a structured understanding of your schema, not raw column names
-- 🛡️ **Safe execution with approval flow** — SELECT runs automatically; anything that mutates data waits for explicit sign-off
-- 🔁 **Self-healing query pipeline** — failed queries are repaired by AI and retried, with confidence scoring on the result
-- ⚡ **Hybrid AI support** — runs fully offline via local models (Qwen/DeepSeek); falls back to Nemotron for complex queries
+- **Semantic-layer grounded SQL** — every query is built against a structured understanding of your schema, not raw column names
+- **Safe execution with approval flow** — SELECT runs automatically; anything that mutates data waits for explicit sign-off
+- **Self-healing query pipeline** — failed queries are repaired by AI and retried, with confidence scoring on the result
+- **Hybrid AI support** — runs fully offline via local models (Qwen/DeepSeek); falls back to Nemotron for complex queries
+- **Advanced join routing** — BFS-based multi-hop join path finding with bidirectional graph traversal
+- **FK-safe DELETE operations** — intelligent warnings showing dependent child tables before destructive operations
+- **Dry-run previews** — shows estimated row counts and affected columns before executing writes
+- **Behavioral analytics** — supports event-type queries (login, page views, click) with device/browser/platform filtering
 
 ---
 
@@ -25,7 +29,7 @@
 
 Most NL→SQL tools translate your question blindly. DB Buddy first builds a **semantic layer** — a map of what every column in your database actually means (value, identifier, date, status, etc.) — and grounds every SQL query in that understanding.
 
-### 🚀 Key Differentiators
+### Key Differentiators
 
 - **Schema-aware reasoning** — Not guess-based. Understands relationships between tables through foreign key inference
 - **Deterministic SQL validation** — Every query is validated against your actual schema before execution
@@ -35,6 +39,10 @@ Most NL→SQL tools translate your question blindly. DB Buddy first builds a **s
 - **Execution diff awareness** — Shows affected columns for UPDATE queries
 - **Explainable AI** — Provides intent explanation, join reasoning, and confidence scoring
 - **Observability dashboard** — Tracks execution patterns, fallback usage, and confidence distribution
+- **Advanced join routing** — BFS-based multi-hop join path finding for complex multi-table queries
+- **FK-safe operations** — Intelligent DELETE warnings showing dependent child tables
+- **Behavioral analytics** — Event-type queries with device/browser/platform filtering
+- **Silent failure detection** — Warns when JOIN queries return 0 rows (possible semantic mismatch)
 
 | Feature | Typical tool | DB Buddy |
 |---|---|---|
@@ -46,6 +54,10 @@ Most NL→SQL tools translate your question blindly. DB Buddy first builds a **s
 | Dry-run preview | ❌ | ✅ (Row counts + affected columns) |
 | Explainability | Basic SQL only | Intent + joins + confidence + reasoning |
 | Observability | None | Metrics dashboard + query history |
+| Multi-hop joins | ❌ | ✅ (BFS-based path finding) |
+| FK-safe DELETE | ❌ | ✅ (Child table warnings) |
+| Behavioral analytics | ❌ | ✅ (Event-type queries) |
+| Silent failure detection | ❌ | ✅ (Zero-row join warnings) |
 | Architecture | Script | Modular: `dbbuddy_core` + CLI + API + Frontend |
 
 ---
@@ -63,6 +75,13 @@ Most NL→SQL tools translate your question blindly. DB Buddy first builds a **s
 - **Dry-run preview** — Shows estimated impact before destructive operations
 - **Join reasoning** — Explains which relationships were inferred for multi-table queries
 - **Observability** — Tracks metrics, query history, and execution patterns
+- **BFS join routing** — Multi-hop join path finding with bidirectional graph traversal
+- **FK-safe DELETE** — Shows dependent child tables before destructive operations
+- **Behavioral analytics** — Event-type queries (login, page views, click) with device/browser/platform filtering
+- **Silent failure detection** — Warns when JOIN queries return 0 rows (possible semantic mismatch)
+- **Numeric comparison filters** — Handles "greater than X", "less than X" patterns
+- **Aggregation validation** — Prevents ONLY_FULL_GROUP_BY errors with proper column grouping
+- **Relevance detection** — Weighted scoring system to filter out non-database queries
 
 ---
 
@@ -72,11 +91,18 @@ Most NL→SQL tools translate your question blindly. DB Buddy first builds a **s
 
 ```
 dbbuddy_core/     ← Core engine (pipeline, mapping, AI, query, schema, DB)
-  └── plugins/    ← Pluggable mapping system
+  ├── plugins/    ← Pluggable mapping system
+  ├── models.py   ← Data models and configuration
+  ├── pipeline.py ← Query processing, safety classification, confidence scoring
+  ├── query.py    ← SQL generation, validation, execution, join routing
+  ├── mapping.py  ← Semantic layer generation
+  ├── schema.py   ← Schema fetching and validation
+  ├── ai.py       ← AI integration and provider routing
+  └── db.py       ← Database connection and operations
 dbbuddy/          ← CLI entry point (thin: input/output only)
-backend/          ← FastAPI REST API
-frontend/         ← React + TanStack Start UI
-tests/            ← 237+ tests including property-based (Hypothesis), adversarial security tests, fuzz testing, chaos testing
+backend/          ← FastAPI REST API with autocommit and connection cleanup
+frontend/         ← React + TanStack Start UI with write query support
+tests/            ← 400+ tests including property-based (Hypothesis), adversarial security tests, fuzz testing, chaos testing, and targeted edge case tests
 ```
 
 > **Note on naming:** `dbbuddy_core` and `dbbuddy` use underscores because they are Python packages — hyphens are not valid in Python import paths. The logical roles are: `dbbuddy_core` = core library, `dbbuddy` = CLI wrapper.
@@ -94,17 +120,19 @@ tests/            ← 237+ tests including property-based (Hypothesis), adversar
               ┌──────────────▼──────────────┐
               │  1. Fetch schema             │  SHOW TABLES + DESCRIBE
               │  2. Build semantic layer     │  classify every column
-              │  3. Generate SQL             │  AI prompt + semantic map
-              │  4. Validate query           │  type check + syntax guard
-              │  5. Execute (safe path)      │  SELECT auto / mutating → hold
-              │  6. Auto-fix if failed       │  repair SQL, retry, score
+              │  3. Relevance detection       │  weighted scoring system
+              │  4. Generate SQL             │  AI prompt + semantic map
+              │  5. Validate query           │  type check + syntax guard
+              │  6. Safety classification    │  READ vs WRITE detection
+              │  7. Execute (safe path)      │  SELECT auto / mutating → hold
+              │  8. Auto-fix if failed       │  repair SQL, retry, score
               └──────────────┬──────────────┘
                              │
               ┌──────────────▼──────────────┐
               │  AI provider routing         │
-              │  hybrid: local → OpenAI      │
+              │  hybrid: local → Nemotron    │
               │  local:  Ollama (offline)    │
-              │  openai: gpt-4o-mini         │
+              │  nemotron: NVIDIA API       │
               └─────────────────────────────┘
 ```
 
@@ -189,7 +217,7 @@ DELETE FROM users WHERE id = 5;
   "model_used": "local",
   "requires_confirmation": true,
   "auto_executed": false,
-  "warning": "⚠️ This query will DELETE rows from 'users'. This action cannot be undone.\n⚠️ This will affect 1 row.",
+  "warning": "This query will DELETE rows from 'users'. This action cannot be undone.\nThis will affect 1 row.",
   "dry_run": {
     "count_query": "SELECT COUNT(*) FROM users WHERE id = 5",
     "estimated_rows": 1
@@ -216,7 +244,7 @@ UPDATE users SET name = 'John', email = 'john@example.com' WHERE id = 10;
   "model_used": "local",
   "requires_confirmation": true,
   "auto_executed": false,
-  "warning": "⚠️ This query will UPDATE existing records in 'users'. Ensure conditions are correct to avoid unintended changes.\n⚠️ This will affect 1 row.\nAffected columns: name, email",
+  "warning": "This query will UPDATE existing records in 'users'. Ensure conditions are correct to avoid unintended changes.\nThis will affect 1 row.\nAffected columns: name, email",
   "dry_run": {
     "count_query": "SELECT COUNT(*) FROM users WHERE id = 10",
     "estimated_rows": 1,
@@ -249,8 +277,8 @@ When executing destructive queries, DB Buddy provides a clear safety interface:
 ```
 User: Delete user with id 5
 
-⚠️ This query will DELETE rows from 'users'. This action cannot be undone.
-⚠️ This will affect 1 row.
+This query will DELETE rows from 'users'. This action cannot be undone.
+This will affect 1 row.
 
 [Run Query]   [Cancel]
 ```
@@ -260,8 +288,8 @@ For UPDATE queries, execution diff awareness shows affected columns:
 ```
 User: Update user name and email
 
-⚠️ This query will UPDATE existing records in 'users'. Ensure conditions are correct to avoid unintended changes.
-⚠️ This will affect 1 row.
+This query will UPDATE existing records in 'users'. Ensure conditions are correct to avoid unintended changes.
+This will affect 1 row.
 Affected columns: name, email
 
 [Run Query]   [Cancel]
@@ -426,7 +454,7 @@ The UI connects to `http://127.0.0.1:8000` by default.
 pytest tests/ -v
 ```
 
-237+ tests pass, including property-based tests via [Hypothesis](https://hypothesis.works), adversarial security tests, fuzz testing, and chaos testing:
+400+ tests pass, including property-based tests via [Hypothesis](https://hypothesis.works), adversarial security tests, fuzz testing, chaos testing, and targeted edge case tests:
 
 - DB connection success/failure/exception paths
 - Schema fetching (DESCRIBE called exactly once per table, completeness, exception handling)
@@ -437,6 +465,11 @@ pytest tests/ -v
 - Plugin loader (valid plugin, invalid fallback, classify interface)
 - Query safety (READ auto-execution, WRITE confirmation, dry-run previews)
 - Pipeline resilience (chaos testing, fuzz testing, adversarial inputs)
+- Intent compiler (deterministic SQL generation, case-insensitive column resolution)
+- Join routing (BFS multi-hop path finding, bidirectional graph traversal)
+- Aggregation validation (GROUP BY compliance, ONLY_FULL_GROUP_BY error prevention)
+- Relevance detection (weighted scoring, coverage thresholds, semantic term matching)
+- Benchmark system (provider comparison, latency measurement, accuracy tracking)
 
 ---
 
