@@ -125,6 +125,4 @@ config.json
 .env.*.local
 demo_benchmark.py
 demo_queries.py
-HYBRID_AI_SETUP.md
 Prompt Test Cases.md
-Prompt Test Cases After Fix.md
