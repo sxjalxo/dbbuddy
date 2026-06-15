@@ -281,18 +281,34 @@ def compile_sql_from_intent(intent: dict, schema: dict, relationships: dict = No
 
     q = user_query.lower() if user_query else ""
 
-    # ── Aggregation intent ────────────────────────────────────────────────
-    COUNT_TERMS = ["count", "number", "how many"]
-    SUM_TERMS = ["total", "sum", "revenue", "sales", "generated"]
-    AVG_TERMS = ["average", "avg"]
-    MAX_TERMS = ["max", "highest", "most"]
-    MIN_TERMS = ["min", "lowest", "least"]
+    # ── Fix 1: Projection intent detection (blocks aggregation) ─────────
+    # If user explicitly wants to list/show specific columns, disable aggregation
+    PROJECTION_INTENT_TERMS = ["list", "show", "display", "get"]
+    COMMON_COLUMN_NAMES = ["name", "email", "country", "price", "amount", "age", "city", "address"]
+    has_projection_intent = any(word in q for word in PROJECTION_INTENT_TERMS) and any(col in q for col in COMMON_COLUMN_NAMES)
 
-    wants_count   = any(kw in q for kw in COUNT_TERMS)
-    wants_sum     = any(kw in q for kw in SUM_TERMS)
-    wants_avg     = any(kw in q for kw in AVG_TERMS)
-    wants_max     = any(kw in q for kw in MAX_TERMS)
-    wants_min     = any(kw in q for kw in MIN_TERMS)
+    # ── Fix 3: "their" pattern handler (high-signal projection pattern) ────
+    has_their_pattern = re.search(r"\btheir\b", q) is not None
+
+    # ── Aggregation intent ────────────────────────────────────────────────
+    # Fix 2: STRICT COUNT_TERMS - removed loose terms like "list", "show", "get", "all"
+    # Fix 2b: Use word boundary matching to avoid false positives like "country" matching "count"
+    COUNT_TERMS = [r"\bcount\b", r"\bnumber of\b", r"\bhow many\b", r"\btotal number\b"]
+    SUM_TERMS = [r"\btotal\b", r"\bsum\b", r"\brevenue\b", r"\bsales\b", r"\bgenerated\b"]
+    AVG_TERMS = [r"\baverage\b", r"\bavg\b"]
+    MAX_TERMS = [r"\bmax\b", r"\bhighest\b", r"\bmost\b"]
+    MIN_TERMS = [r"\bmin\b", r"\blowest\b", r"\bleast\b"]
+
+    wants_count   = any(re.search(pattern, q) for pattern in COUNT_TERMS)
+    wants_sum     = any(re.search(pattern, q) for pattern in SUM_TERMS)
+    wants_avg     = any(re.search(pattern, q) for pattern in AVG_TERMS)
+    wants_max     = any(re.search(pattern, q) for pattern in MAX_TERMS)
+    wants_min     = any(re.search(pattern, q) for pattern in MIN_TERMS)
+    
+    # Fix 1 & 3: Block aggregation if projection intent or "their" pattern detected
+    if has_projection_intent or has_their_pattern:
+        wants_count = wants_sum = wants_avg = wants_max = wants_min = False
+    
     wants_aggregation = any([wants_count, wants_sum, wants_avg, wants_max, wants_min])
     wants_group   = any(kw in q for kw in ("per ", "by user", "by customer", "by product",
                                             "by country", "each", "grouped",
