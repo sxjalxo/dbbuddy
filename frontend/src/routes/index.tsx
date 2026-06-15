@@ -46,15 +46,18 @@ function Landing() {
             </Badge>
           </Link>
           <div className="hidden md:flex items-center gap-7 text-sm text-muted-foreground">
-            {["Features", "How it works", "For teams", "Security"].map((label) => (
-              <a
-                key={label}
-                href={`#${label.toLowerCase().replace(/ /g, "")}`}
-                className="relative hover:text-foreground transition-colors duration-200 after:absolute after:bottom-[-2px] after:left-0 after:h-px after:w-0 after:bg-primary after:transition-all after:duration-300 hover:after:w-full"
-              >
-                {label}
-              </a>
-            ))}
+            {["Features", "How it works", "For teams", "Security"].map((label) => {
+              const sectionId = label === "How it works" ? "how" : label === "For teams" ? "teams" : label.toLowerCase();
+              return (
+                <a
+                  key={label}
+                  href={`#${sectionId}`}
+                  className="relative hover:text-foreground transition-colors duration-200 after:absolute after:bottom-[-2px] after:left-0 after:h-px after:w-0 after:bg-primary after:transition-all after:duration-300 hover:after:w-full"
+                >
+                  {label}
+                </a>
+              );
+            })}
           </div>
           <div className="flex items-center gap-2">
             <Link to="/app">
@@ -115,40 +118,27 @@ function Landing() {
                 </Button>
               </a>
             </div>
-            <div className="mt-8 flex items-center gap-4 text-sm text-muted-foreground animate-fade-up delay-400">
-              <div className="flex -space-x-2">
-                {["EN", "MR", "JK", "PL", "AS"].map((i) => (
-                  <div
-                    key={i}
-                    className="h-9 w-9 rounded-full border-2 border-background bg-secondary grid place-items-center text-[11px] font-medium transition-transform duration-200 hover:z-10 hover:scale-110"
-                  >
-                    {i}
-                  </div>
-                ))}
-              </div>
-              <span>Used daily by 400+ teammates across Data, Ops, and Product</span>
-            </div>
           </div>
 
           {/* Hero card */}
           <div className="relative animate-fade-left delay-200">
-            <div className="absolute -top-4 -left-4 z-10 rounded-2xl bg-card border border-border px-4 py-3 shadow-lg animate-fade-up delay-500 animate-float interactive-lift">
-              <div className="font-display font-bold text-2xl text-gradient-animate">10×</div>
-              <div className="text-xs text-muted-foreground">Faster ad-hoc queries</div>
+            <div className="absolute -top-4 -left-4 z-10 rounded-2xl bg-card border border-border px-4 py-3 shadow-lg animate-fade-up delay-500 animate-float interactive-lift" style={{ animation: "fadeUp 0.55s cubic-bezier(0.22,1,0.36,1) 500ms both, float 6s ease-in-out 500ms infinite" }}>
+              <div className="font-display font-bold text-2xl text-gradient-animate">AI</div>
+              <div className="text-xs text-muted-foreground">SQL generation</div>
             </div>
             <div
               className="absolute -bottom-5 -left-2 z-10 rounded-2xl bg-card border border-border px-4 py-3 shadow-lg animate-float interactive-lift"
-              style={{ animation: "fadeUp 0.55s cubic-bezier(0.22,1,0.36,1) 700ms both, float 4.5s ease-in-out 700ms infinite" }}
+              style={{ animation: "fadeUp 0.55s cubic-bezier(0.22,1,0.36,1) 700ms both, float 6s ease-in-out 700ms infinite" }}
             >
-              <div className="font-display font-bold text-2xl text-gradient-animate">80%</div>
-              <div className="text-xs text-muted-foreground">Less analyst backlog</div>
+              <div className="font-display font-bold text-2xl text-gradient-animate">Safe</div>
+              <div className="text-xs text-muted-foreground">Execution flow</div>
             </div>
             <div
               className="absolute -right-3 top-1/3 z-10 rounded-2xl bg-card border border-border px-4 py-3 shadow-lg animate-float interactive-lift"
-              style={{ animation: "fadeLeft 0.55s cubic-bezier(0.22,1,0.36,1) 600ms both, float 3.8s ease-in-out 600ms infinite" }}
+              style={{ animation: "fadeLeft 0.55s cubic-bezier(0.22,1,0.36,1) 600ms both, float 6s ease-in-out 600ms infinite" }}
             >
-              <div className="font-display font-bold text-2xl text-gradient-animate">99%</div>
-              <div className="text-xs text-muted-foreground">Schema-grounded</div>
+              <div className="font-display font-bold text-2xl text-gradient-animate">Smart</div>
+              <div className="text-xs text-muted-foreground">Join routing</div>
             </div>
             <div className="overflow-hidden rounded-3xl border border-border shadow-2xl transition-all duration-500 hover:shadow-[0_24px_60px_-12px_oklch(0.92_0.03_240/0.3)] hover:border-primary/30 hover:scale-[1.01]">
               <img
@@ -190,12 +180,10 @@ function Landing() {
         <div className="max-w-2xl">
           <Badge variant="secondary" className="rounded-full animate-fade-up">Why we built it</Badge>
           <h2 className="mt-4 font-display font-bold text-4xl md:text-5xl tracking-tight animate-fade-up delay-100">
-            Less waiting on data. More deciding with it.
+            Schema-aware SQL generation that validates, explains, and safely executes.
           </h2>
           <p className="mt-4 text-muted-foreground text-lg animate-fade-up delay-200">
-            Every team inside the company hits the same wall: questions pile up, the data team is
-            booked out, dashboards go stale. DB Buddy puts a careful analyst between every teammate
-            and our warehouses.
+            Most NL-to-SQL tools translate questions blindly. DB Buddy first builds a semantic layer — a map of what every column in your database actually means — and grounds every SQL query in that understanding. It validates against your actual schema, provides join reasoning, and executes with safety controls.
           </p>
         </div>
 
@@ -203,33 +191,33 @@ function Landing() {
           {[
             {
               icon: Sparkles,
-              title: "Natural language → SQL",
-              desc: "Ask in plain English. DB Buddy grounds answers in the actual schema, columns, and join paths it has access to.",
-            },
-            {
-              icon: Code2,
-              title: "Every query is reviewable",
-              desc: "The generated SQL is shown alongside the result. Copy it, tweak it, save it to the team library, or open it in your editor.",
-            },
-            {
-              icon: BarChart3,
-              title: "Results that explain themselves",
-              desc: "Tables, JSON, and charts inline — plus a short interpretation of what the numbers mean and which columns drove the answer.",
+              title: "Semantic-layer grounded SQL",
+              desc: "Every query is built against a structured understanding of your schema, not raw column names. Reduces hallucination and improves query correctness.",
             },
             {
               icon: Shield,
-              title: "Permissions stay yours",
-              desc: "DB Buddy runs as you. Row-level rules, masking policies, and warehouse roles all apply — nothing is bypassed.",
+              title: "Safe execution with approval flow",
+              desc: "SELECT queries run automatically; anything that mutates data waits for explicit sign-off. Dry-run previews show estimated impact before execution.",
             },
             {
-              icon: Clock,
-              title: "Shared history & saved queries",
-              desc: "Recent questions and approved queries are visible to your team, so the answer to 'how did we calculate MRR?' lives in one place.",
+              icon: Zap,
+              title: "Self-healing query pipeline",
+              desc: "Failed queries are repaired by AI and retried automatically, with confidence scoring on the result. Auto-fix loop with retry.",
             },
             {
               icon: Database,
-              title: "Connects to what we already use",
-              desc: "Postgres, BigQuery, Snowflake, and internal MySQL replicas. New sources are added by the platform team, not by every user.",
+              title: "Advanced join routing",
+              desc: "BFS-based multi-hop join path finding with bidirectional graph traversal. Handles complex multi-table queries automatically.",
+            },
+            {
+              icon: Code2,
+              title: "FK-safe DELETE operations",
+              desc: "Intelligent warnings showing dependent child tables before destructive operations. Prevents foreign key constraint failures.",
+            },
+            {
+              icon: BarChart3,
+              title: "Hybrid AI support",
+              desc: "Runs fully offline via local models (Qwen/DeepSeek); falls back to Nemotron for complex queries. Local-first with cloud fallback.",
             },
           ].map(({ icon: Icon, title, desc }, idx) => (
             <div
@@ -349,20 +337,20 @@ function Landing() {
               <Shield className="h-3.5 w-3.5" /> Security &amp; governance
             </Badge>
             <h2 className="mt-4 font-display font-bold text-4xl tracking-tight">
-              Built on the same controls our data team already trusts.
+              Safety-first execution with comprehensive validation.
             </h2>
             <p className="mt-4 text-muted-foreground">
-              DB Buddy never stores raw warehouse data, never bypasses warehouse roles, and logs every
-              query for audit. It&apos;s deployed inside our network &mdash; not a third-party SaaS.
+              Every query is validated against your actual schema before execution. SELECT queries auto-execute, while INSERT/UPDATE/DELETE require explicit approval. The system includes silent failure detection for JOIN queries returning 0 rows.
             </p>
           </div>
           <ul className="space-y-3">
             {[
-              "SSO via the company identity provider",
-              "All queries run with the caller's warehouse role",
-              "Full query + result audit log retained for 90 days",
-              "PII columns are masked according to data classification",
-              "Self-hosted inside the corporate VPC — no external model exposure",
+              "Query safety classification (READ vs WRITE detection)",
+              "Dry-run previews with estimated row counts",
+              "FK-safe DELETE with child table warnings",
+              "Silent failure detection for zero-row joins",
+              "Schema validation before execution",
+              "Aggregation validation to prevent GROUP BY errors",
             ].map((p, idx) => (
               <li
                 key={p}
