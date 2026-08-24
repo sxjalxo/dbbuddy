@@ -48,7 +48,10 @@ class SQLServerDialect(Dialect):
 
     # ── Connection ────────────────────────────────────────────────────────────
 
-    def connect(self, host, user, password, database, port=None):
+    def connect(self, host, user, password, database, port=None, db_schema=None):
+        # SQL Server does have schemas (`dbo` and friends) and introspection here
+        # still assumes the default one. Accepted and ignored for now rather than
+        # silently pretending to honour it; see docs/ROADMAP.md.
         kwargs = dict(server=host.strip(), user=user, password=password, database=database)
         if port:
             kwargs["port"] = int(port)

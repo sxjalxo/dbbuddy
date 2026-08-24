@@ -32,7 +32,10 @@ class MySQLDialect(Dialect):
 
     # ── Connection ────────────────────────────────────────────────────────────
 
-    def connect(self, host, user, password, database, port=None):
+    def connect(self, host, user, password, database, port=None, db_schema=None):
+        # MySQL has no namespace below the database — CREATE SCHEMA is an alias
+        # for CREATE DATABASE — so ``database`` already carries this. Accepted and
+        # ignored so callers need not special-case the engine.
         kwargs = dict(host=host, user=user, password=password, database=database)
         if port:
             kwargs["port"] = int(port)

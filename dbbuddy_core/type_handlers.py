@@ -575,8 +575,16 @@ def extract_comparisons(
             # planner already resolved (the measure's table for "revenue last
             # month"); only then the whole schema. Narrowing the scope is what
             # makes a single date column resolvable instead of ambiguous.
+            #
+            # Each of those is a candidate *tier*, not a veto. "total revenue by
+            # region last quarter" names ``regions``, which has no date column at
+            # all — treating that as the final scope dropped the filter silently
+            # and answered over all time. Worse, it only worked at all when the
+            # semantic enhancer happened to append the measure's table to the
+            # query text, so the same question was filtered on an instance that
+            # had learned a mapping and unfiltered on one that had not.
             focus = [t for t in (focus_tables or []) if t in schema]
-            scope = named_tables or focus or list(schema)
+            scopes = [named_tables, focus, list(schema)]
 
             # A column is temporal by declared type OR by naming convention. The
             # second clause matters because SQLite (and any loosely-typed source)
@@ -608,13 +616,19 @@ def extract_comparisons(
                     "date", "time", "timestamp", "datetime",
                 )
 
-            date_cols = [
-                (t, c) for t in scope for c in schema.get(t, []) if _looks_temporal(t, c)
-            ]
-            if len(date_cols) == 1:
-                t, c = date_cols[0]
-                start, end = rng
-                _record(t, c, {"column": f"{t}.{c}", "operator": ">=", "value": start.isoformat()})
-                _record(t, c, {"column": f"{t}.{c}", "operator": "<", "value": end.isoformat()})
+            # First tier that resolves to exactly one date column wins. More than
+            # one is still a refusal to guess — at every tier, not just the last.
+            for scope in scopes:
+                if not scope:
+                    continue
+                date_cols = [
+                    (t, c) for t in scope for c in schema.get(t, []) if _looks_temporal(t, c)
+                ]
+                if len(date_cols) == 1:
+                    t, c = date_cols[0]
+                    start, end = rng
+                    _record(t, c, {"column": f"{t}.{c}", "operator": ">=", "value": start.isoformat()})
+                    _record(t, c, {"column": f"{t}.{c}", "operator": "<", "value": end.isoformat()})
+                    break
 
     return filters

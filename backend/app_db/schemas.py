@@ -41,13 +41,35 @@ class RegisterRequest(SanitizedModel):
     full_name: str | None = Field(default=None, max_length=200)
 
 
+class EmailVerificationRequest(SanitizedModel):
+    email: EmailStr
+
+
+class EmailVerificationConfirm(BaseModel):
+    token: str = Field(min_length=1)
+
+
+class PasswordResetRequest(SanitizedModel):
+    email: EmailStr
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str = Field(min_length=1)
+    # Same floor as registration. A reset is not the place to accept a weaker
+    # password than the account could have been created with.
+    new_password: str = Field(min_length=8)
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    # Optional because a browser session carries the refresh token in an httpOnly
+    # cookie instead (see app_db/cookies.py). The endpoint requires exactly one of
+    # the two, and rejects a request carrying neither.
+    refresh_token: str | None = None
 
 
 class TokenPair(BaseModel):

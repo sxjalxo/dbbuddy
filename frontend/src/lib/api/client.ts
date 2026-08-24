@@ -8,22 +8,43 @@ export const API_BASE =
   (import.meta.env.VITE_API_BASE as string | undefined) ||
   (import.meta.env.DEV ? "/api" : "http://127.0.0.1:8000");
 
-const ACCESS_KEY = "dbbuddy_access_token";
-const REFRESH_KEY = "dbbuddy_refresh_token";
+// Tokens are deliberately NOT in localStorage any more.
+//
+// Both used to be, which made any XSS anywhere in this app a full account
+// takeover — and, because the refresh token was there too, one that outlived the
+// 15-minute access token. The account can query connected business databases, so
+// it is the highest-value thing this frontend holds.
+//
+// Now: the refresh token lives in an httpOnly cookie that script cannot read (the
+// server sets it when we send `X-Auth-Mode: cookie`), and the access token lives
+// in a module variable — gone on reload, restored by a refresh call. An XSS can
+// still *use* the session while the page is open; it can no longer walk away with
+// one that keeps working afterwards.
+let accessToken: string | null = null;
 
 export function getAccessToken(): string | null {
-  return localStorage.getItem(ACCESS_KEY);
+  return accessToken;
 }
-export function getRefreshToken(): string | null {
-  return localStorage.getItem(REFRESH_KEY);
+
+/**
+ * Record a new session.
+ *
+ * The second argument is ignored and kept only so callers read naturally against
+ * the API's `TokenPair`: in cookie mode the server sends an empty string there,
+ * because the real refresh token went into the cookie.
+ */
+export function setTokens(access: string, _refresh?: string): void {
+  accessToken = access;
 }
-export function setTokens(access: string, refresh: string): void {
-  localStorage.setItem(ACCESS_KEY, access);
-  localStorage.setItem(REFRESH_KEY, refresh);
-}
+
 export function clearTokens(): void {
-  localStorage.removeItem(ACCESS_KEY);
-  localStorage.removeItem(REFRESH_KEY);
+  accessToken = null;
+}
+
+/** The double-submit CSRF token. Readable by design — echoing it is the check. */
+function csrfToken(): string {
+  const match = document.cookie.match(/(?:^|;\s*)dbbuddy_csrf=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : "";
 }
 
 export class ApiError extends Error {
@@ -52,16 +73,22 @@ export function setForbiddenHandler(fn: ((detail: string) => void) | null): void
 // Single-flight refresh so concurrent 401s don't trigger multiple refreshes.
 let refreshInFlight: Promise<boolean> | null = null;
 
-async function refreshAccess(): Promise<boolean> {
+export async function refreshAccess(): Promise<boolean> {
   if (refreshInFlight) return refreshInFlight;
-  const refresh = getRefreshToken();
-  if (!refresh) return false;
+  // No early return on a missing token: the refresh credential is an httpOnly
+  // cookie, so this code cannot see whether one exists. Asking the server is the
+  // only way to find out, and a failed attempt costs one request.
   refreshInFlight = (async () => {
     try {
       const res = await fetch(`${API_BASE}/auth/refresh`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: refresh }),
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Auth-Mode": "cookie",
+          "X-CSRF-Token": csrfToken(),
+        },
+        body: JSON.stringify({}),
       });
       if (!res.ok) {
         // Refresh token expired/invalid → unrecoverable; force logout.
@@ -70,7 +97,7 @@ async function refreshAccess(): Promise<boolean> {
         return false;
       }
       const data = await res.json();
-      setTokens(data.access_token, data.refresh_token);
+      setTokens(data.access_token);
       return true;
     } catch {
       return false;
@@ -91,9 +118,21 @@ export async function apiFetch(
   if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const token = getAccessToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
+  // Declared on every request rather than only the auth ones: it is what tells
+  // the server to put the refresh token in a cookie instead of the response body,
+  // and the endpoints that do not issue sessions ignore it.
+  headers.set("X-Auth-Mode", "cookie");
 
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
-  if (res.status === 401 && _retry && getRefreshToken()) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers,
+    // Without this the browser withholds the refresh cookie on a cross-origin
+    // call, and every reload would land on the login screen.
+    credentials: "include",
+  });
+  // Retried unconditionally on a 401: whether a refresh cookie exists is not
+  // knowable from script, so "do we have one?" can only be answered by trying.
+  if (res.status === 401 && _retry) {
     const ok = await refreshAccess();
     if (ok) return apiFetch(path, options, false);
   }

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..deps import require_permission, write_audit
+from ..rate_limit import PROVIDER_TEST_BUDGET, rate_limit
 from ..models import AIProviderConfig, User
 from ..schemas import AIProviderIn, AIProviderOut, AIProviderTestResult, AIProviderUpdate, VALID_ADAPTERS
 from ..security import decrypt_secret, encrypt_secret
@@ -255,7 +256,11 @@ def duplicate_provider(
     return _provider_out(clone)
 
 
-@router.post("/{provider_id}/test", response_model=AIProviderTestResult)
+# Each call makes *this server* issue an outbound request to an operator-
+# supplied URL. Unmetered, that is a way to use the deployment as a traffic
+# source; the SSRF guard limits where, this limits how often.
+@router.post("/{provider_id}/test", response_model=AIProviderTestResult,
+             dependencies=[Depends(rate_limit("provider_test", PROVIDER_TEST_BUDGET))])
 def test_provider(
     provider_id: str,
     db: Session = Depends(get_db),

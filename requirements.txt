@@ -4,9 +4,22 @@
 # only the narrower set the installable `dbbuddy` CLI needs.
 #
 # Version policy: floors, not pins. Lower bounds encode "this is the first
-# release with the API we call"; a deployment that needs byte-identical builds
-# should compile this into a fully pinned lock file (`pip-compile`/`uv pip
-# compile`) rather than pinning here, so security patches are not blocked.
+# release with the API we call", so security patches are never blocked by this
+# file.
+#
+# `requirements.lock` is the compiled, fully pinned resolution of these floors —
+# use it for a deployment that needs byte-identical builds. Regenerate after
+# changing anything here:
+#
+#     uv pip compile --universal --python-version 3.12 requirements.txt -o requirements.lock
+#
+# `--universal` resolves across platforms and emits environment markers, so a lock
+# compiled on one OS is still correct on another; without it a Windows machine
+# produces a lock Linux CI cannot install.
+#
+# CI deliberately installs from *this* file, not the lock: resolving fresh is what
+# surfaces an upstream release that breaks us, and finding that out from a nightly
+# build beats finding out from a deployment.
 
 # =========================
 # Core / HTTP API

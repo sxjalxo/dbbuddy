@@ -73,7 +73,7 @@ _RESERVED_IDENTIFIERS = frozenset({
 _PLAIN_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def _needs_quoting(name: str) -> bool:
+def _needs_quoting(name: str, dialect=None) -> bool:
     """Whether an identifier must be quoted to survive the parser.
 
     Quoting is applied **only when needed** rather than universally. Universal
@@ -85,18 +85,33 @@ def _needs_quoting(name: str) -> bool:
 
     Needed when the identifier is a reserved word, contains anything outside
     ``[A-Za-z0-9_]`` (spaces, hyphens, accents, CJK), or starts with a digit.
+
+    ...and, on an engine that folds case, when the identifier is not already in
+    that case. A PostgreSQL table created as ``"CUSTOMER_LOG"`` is reported by
+    introspection as ``CUSTOMER_LOG``; emitted unquoted, PostgreSQL folds the
+    reference to ``customer_log`` and reports that the relation does not exist.
+    Nothing was wrong with the name — the mistake is assuming an unquoted
+    identifier means what it says on every engine. Found by the first dogfood run
+    against a real PostgreSQL target.
     """
     if not name:
         return False
     if not _PLAIN_IDENTIFIER.match(name):
         return True   # space, hyphen, digit-leading, or non-ASCII
-    return name.lower() in _RESERVED_IDENTIFIERS
+    if name.lower() in _RESERVED_IDENTIFIERS:
+        return True
+    folds = getattr(getattr(dialect, "capabilities", None), "unquoted_identifier_case", None)
+    if folds == "lower" and name != name.lower():
+        return True
+    if folds == "upper" and name != name.upper():
+        return True
+    return False
 
 
 def _quote(name: Any, dialect=None) -> str:
     """Quote one identifier for the active dialect, if it needs it."""
     text = str(name)
-    if not _needs_quoting(text):
+    if not _needs_quoting(text, dialect):
         return text
     if dialect is not None:
         try:

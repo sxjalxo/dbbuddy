@@ -70,7 +70,7 @@ def clear_engine_caches() -> list[str]:
         return []
 
 
-def make_config(db_path: str) -> DBConfig:
+def make_config(db_path: str, target: str = "sqlite") -> DBConfig:
     # ai=False: the rule-based engine is what is under test. An LLM in the loop
     # would make failures non-reproducible and hide which layer is wrong.
     #
@@ -79,6 +79,22 @@ def make_config(db_path: str) -> DBConfig:
     # accepts (see sqlite_target._Cursor.execute). Switching the declared engine
     # instead would change operator and function rendering too, which is a
     # different experiment.
+    #
+    # ``--target postgres`` is the other half of that trade. It declares the
+    # engine as PostgreSQL and rewrites nothing, so the statement the compiler
+    # emits is the statement the database sees. That is the only way to grade the
+    # SQL itself: the SQLite shim's backtick-to-double-quote rewrite turned an
+    # aggregate quoted as an identifier into a string constant, which executes,
+    # so eight datasets stayed green while "top N X by Y" was broken on
+    # PostgreSQL. See scripts/dogfood/postgres_target.py.
+    if target == "postgres":
+        from scripts.dogfood.postgres_target import pg_params
+
+        params = pg_params()
+        return DBConfig(host=params["host"], port=params["port"], user=params["user"],
+                        password=params["password"], database=params["database"],
+                        engine="postgresql", ai=False)
+
     return DBConfig(host="localhost", user="dogfood", password="",
                     database=db_path, engine="mysql", ai=False)
 
@@ -114,6 +130,12 @@ def main() -> int:
     ap.add_argument("--dataset", default="erp", choices=sorted(DATASETS),
                     help="which schema to exercise")
     ap.add_argument("--db", default=None)
+    ap.add_argument("--target", default="sqlite", choices=("sqlite", "postgres"),
+                    help="where the dataset runs. sqlite (default) is fast and needs no "
+                         "server but cannot grade the SQL itself; postgres copies the "
+                         "dataset into a real server and rewrites nothing. Connection "
+                         "from DOGFOOD_PG_* env vars. Use it for shape, not scale — the "
+                         "copy is row-by-row.")
     ap.add_argument("--rebuild", action="store_true", help="regenerate the dataset")
     ap.add_argument("--suite", nargs="+", help="run only these suites")
     ap.add_argument("-v", "--verbose", action="store_true", help="print every probe")
@@ -174,11 +196,38 @@ def main() -> int:
         chosen = dict(items)
         print(f"shuffled suite order (seed {seed}): {', '.join(chosen)}")
 
-    config = make_config(args.db)
+    config = make_config(args.db, args.target)
     report = Report()
     started = time.time()
 
-    with engine_pointed_at(args.db):
+    if args.target == "postgres":
+        from scripts.dogfood.postgres_target import (
+            engine_pointed_at_postgres, load_sqlite_into_postgres,
+        )
+        from scripts.dogfood.postgres_target import query as pg_query
+
+        print(f"copying {args.dataset} into PostgreSQL "
+              f"({config.host}:{config.port}/{config.database}) …")
+        copied = load_sqlite_into_postgres(args.db)
+        print(f"  {copied} rows")
+        target_ctx = engine_pointed_at_postgres()
+        run_sql = pg_query
+
+        def list_columns(table):
+            rows = pg_query(
+                "SELECT column_name FROM information_schema.columns "
+                f"WHERE table_schema = 'public' AND table_name = '{table}' "
+                "ORDER BY ordinal_position"
+            )
+            return [r["column_name"] for r in rows]
+    else:
+        target_ctx = engine_pointed_at(args.db)
+        run_sql = lambda s: query(args.db, s)   # noqa: E731
+
+        def list_columns(table):
+            return [r["name"] for r in query(args.db, f'PRAGMA table_info("{table}")')]
+
+    with target_ctx:
         # Analyze first, like a real user does. The dimension value index — which
         # is what lets a bare literal ("shipped") bind to the column that holds it
         # — is only built on an explicit analyze/rebuild, so querying a
@@ -195,7 +244,8 @@ def main() -> int:
             print(f"\n── {name} " + "─" * max(0, 60 - len(name)))
             ctx = suites.SuiteContext(
                 ask=lambda q: ask(config, q),
-                sql=lambda s: query(args.db, s),
+                sql=run_sql,
+                columns=list_columns,
                 report=report,
                 verbose=args.verbose,
             )

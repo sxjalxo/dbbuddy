@@ -715,7 +715,7 @@ which remain query targets only:
 * **Background jobs** — in-process APScheduler: scheduled report refreshes /
   context rebuilds, run-now, history, notifications.
 
-Schema is versioned with **Alembic** (`backend/migrations/`, revisions 0001–0013;
+Schema is versioned with **Alembic** (`backend/migrations/`, revisions 0001–0018;
 applied automatically on startup). Auth adds stateless refresh-token revocation
 (`users.token_version`, migration 0009) bumped on logout / MFA-disable /
 deactivation. Migration 0010 adds the `execution_tokens` table backing the

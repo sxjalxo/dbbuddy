@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 
 from .config import settings
 
@@ -104,10 +104,26 @@ def decode_token(token: str, *, expected_type: str | None = None) -> dict:
 # Derive a stable 32-byte Fernet key from APP_SECRET_KEY (or the JWT secret in
 # dev). ERP passwords are encrypted here before being stored in the app DB.
 
-def _fernet() -> Fernet:
-    seed = (settings.APP_SECRET_KEY or settings.JWT_SECRET).encode("utf-8")
-    key = base64.urlsafe_b64encode(hashlib.sha256(seed).digest())
-    return Fernet(key)
+def _key_from(seed: str) -> bytes:
+    return base64.urlsafe_b64encode(hashlib.sha256(seed.encode("utf-8")).digest())
+
+
+def _fernet() -> MultiFernet:
+    """Every key this deployment can read with, newest first.
+
+    ``MultiFernet`` encrypts with the first and decrypts with whichever fits, so a
+    rotation can put the new key in front while the old one still reads existing
+    ciphertext. Without that, changing ``APP_SECRET_KEY`` made every stored ERP
+    password, AI provider key and MFA secret permanently unreadable — the advice
+    "rotate your secrets" was, here, "destroy your customers' connections".
+
+    Built per call rather than cached: the settings are patchable at runtime (the
+    rotation script and the tests both do it), and constructing a Fernet is cheap
+    next to the database round-trip that always accompanies it.
+    """
+    primary = settings.APP_SECRET_KEY or settings.JWT_SECRET
+    seeds = [primary, *settings.APP_SECRET_KEYS_PREVIOUS]
+    return MultiFernet([Fernet(_key_from(seed)) for seed in seeds if seed])
 
 
 def encrypt_secret(plaintext: str) -> str:
@@ -116,6 +132,16 @@ def encrypt_secret(plaintext: str) -> str:
 
 def decrypt_secret(ciphertext: str) -> str:
     return _fernet().decrypt(ciphertext.encode("utf-8")).decode("utf-8")
+
+
+def rotate_secret(ciphertext: str) -> str:
+    """Re-encrypt an existing value under the current primary key.
+
+    Decrypts with whichever configured key fits and re-encrypts with the first —
+    so after running this over every stored secret, the retired keys can be
+    dropped from ``APP_SECRET_KEYS_PREVIOUS`` without losing anything.
+    """
+    return _fernet().rotate(ciphertext.encode("utf-8")).decode("utf-8")
 
 
 # ── MFA / 2FA (TOTP + recovery codes) ─────────────────────────────────────────
@@ -160,6 +186,21 @@ def generate_recovery_codes(n: int = 10) -> list[str]:
 def hash_recovery_code(code: str) -> str:
     """Recovery codes are high-entropy, so a fast SHA-256 hash is sufficient."""
     return hashlib.sha256((code or "").strip().lower().encode("utf-8")).hexdigest()
+
+
+# ── Password reset ────────────────────────────────────────────────────────────
+# A reset token is a bearer credential that can take over an account, so it is
+# treated like one: high entropy, hashed at rest, single use, short lived. The
+# hash is SHA-256 rather than Argon2 for the same reason as API keys and recovery
+# codes — there is no low-entropy secret to slow an attacker down over.
+
+def generate_reset_token() -> str:
+    """A new reset token. Returned once, to be emailed and never stored raw."""
+    return _secrets.token_urlsafe(32)
+
+
+def hash_reset_token(token: str) -> str:
+    return hashlib.sha256((token or "").strip().encode("utf-8")).hexdigest()
 
 
 # ── Personal API keys (CLI / automation) ──────────────────────────────────────

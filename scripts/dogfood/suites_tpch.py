@@ -285,7 +285,7 @@ def suite_unmatched_measure(ctx: SuiteContext) -> None:
         column_match_tokens, expand_query_tokens, tokens_present,
         uniform_column_prefix)
 
-    schema = {t: [r["name"] for r in ctx.sql(f'PRAGMA table_info("{t}")')]
+    schema = {t: ctx.column_names(t)
               for t in ("customer", "lineitem", "orders", "part",
                         "partsupp", "supplier")}
 

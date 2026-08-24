@@ -59,6 +59,55 @@ jobs:
           DBBUDDY_STRICT: "1"
         run: pytest -q
 
+  postgres:
+    name: Tests (PostgreSQL application database)
+    runs-on: ubuntu-latest
+    # SQLite is the development default and what the `test` job above uses.
+    # Production is PostgreSQL, and a green SQLite run does not prove the storage
+    # constraints hold — length caps, NUL bytes in text, and cascade behaviour all
+    # differ, and that gap has produced real misses before.
+    #
+    # Note the limit honestly: this covers the *application* database. The engine
+    # bugs that only appear on PostgreSQL (an aggregate quoted as an identifier in
+    # ORDER BY, say) need a PostgreSQL *query target*, which is what
+    # integration.yml exercises.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dbbuddy
+          POSTGRES_PASSWORD: dbbuddy
+          POSTGRES_DB: dbbuddy_test
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U dbbuddy -d dbbuddy_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e ".[dev]"
+
+      - name: Test against PostgreSQL
+        env:
+          DBBUDDY_STRICT: "1"
+          APP_DATABASE_URL: postgresql+psycopg2://dbbuddy:dbbuddy@localhost:5432/dbbuddy_test
+        run: pytest -q
+
   frontend:
     name: Frontend (build + lint)
     runs-on: ubuntu-latest

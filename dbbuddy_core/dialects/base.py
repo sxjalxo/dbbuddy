@@ -37,10 +37,18 @@ class Dialect(ABC):
     # ── Connection lifecycle ──────────────────────────────────────────────────
 
     @abstractmethod
-    def connect(self, host: str, user: str, password: str, database: str, port: int | None = None) -> Any:
+    def connect(self, host: str, user: str, password: str, database: str,
+                port: int | None = None, db_schema: str | None = None) -> Any:
         """Open a raw driver connection. Raise on failure.
 
         ``port`` is optional; when None the engine's default port is used.
+
+        ``db_schema`` selects a namespace *within* the database, for engines that
+        have one. PostgreSQL does (and a database whose tables live outside
+        ``public`` was previously invisible); MySQL does not — a schema and a
+        database are the same thing there, so ``database`` already says it. An
+        engine with nothing to do here ignores it rather than failing, so callers
+        can pass it unconditionally.
         """
         ...
 

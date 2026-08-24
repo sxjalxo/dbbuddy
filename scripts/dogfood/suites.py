@@ -20,6 +20,19 @@ class SuiteContext:
     sql: Callable[[str], list]      # raw SQL -> rows (ground truth)
     report: Report
     verbose: bool = False
+    # A suite that needs a table's columns must not reach for `PRAGMA` — that is
+    # SQLite's spelling, and the suites now run against PostgreSQL too. The target
+    # supplies this, so the question "what columns does this table have?" has one
+    # answer per target rather than one per suite.
+    columns: Callable[[str], list] | None = None
+
+    def column_names(self, table: str) -> list:
+        """Column names for a table, however this target spells the question."""
+        if self.columns is None:
+            raise RuntimeError(
+                "this target did not supply a column lookup; see run.py --target"
+            )
+        return self.columns(table)
 
     def probe(self, question: str) -> Probe:
         p = self.ask(question)

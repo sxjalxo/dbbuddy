@@ -30,6 +30,222 @@ execution — and how to report a vulnerability. Implementation lives in
   an ephemeral secret (tokens don't survive a restart) — and in `production` mode
   a missing secret is a hard startup error (see **Startup configuration**).
 
+### Outbound requests (SSRF) — resolve once, dial that address
+
+An AI provider's `base_url` is a destination *this server* reaches, from inside
+the deployment's network, with the org's API key attached. Two rules apply
+(`dbbuddy_core/net_guard.py`):
+
+- **Always blocked:** link-local space, including the cloud instance-metadata
+  addresses, and any non-`http(s)` scheme.
+- **Blocked in strict mode** (`AI_PROVIDER_BLOCK_PRIVATE_NETWORKS=1`): loopback and
+  RFC1918. Off by default because the normal deployment runs Ollama on localhost or
+  the LAN; on for anything hosted, where a tenant admin is untrusted relative to the
+  network the server sits in.
+
+**The rebinding window is closed.** The guard used to validate the URL and then let
+`requests` resolve the name again at connect time — so a short TTL and an
+attacker-controlled zone could pass the check on one address and open the socket on
+another. `net_guard.resolve_and_pin` now resolves **once**, requires *every* address
+that lookup returned to pass, and returns the address to dial;
+`dbbuddy_core.safe_http.post` connects to exactly that address. No second lookup
+means no second answer that could differ.
+
+Pinning does not weaken TLS: the original hostname is kept as the `Host` header, the
+SNI name, and the name the certificate is checked against. Connecting by IP without
+that would break verification — and the usual "fix" for that is to disable it,
+trading a rebinding window for a permanent one.
+
+A blocked destination raises a refusal, not a transient error, so the provider chain
+fails over instead of retrying against it.
+
+`backend/app_db/url_guard.py` still validates on write, so a bad endpoint fails while
+someone is looking at the form. It is the early failure, not the boundary. One
+deliberate difference: a name that does not resolve passes there (DNS being briefly
+down should not block saving a provider) and is refused at connect time, where there
+is no address to pin.
+
+### HTTP rate limiting
+
+Three limiters, none redundant:
+
+| Limiter | Counts | On a Redis outage |
+| --- | --- | --- |
+| `login_guard` | failed sign-ins, registrations | degrades **closed** (stricter local window) |
+| `dbbuddy_core.rate_limiter` | query *cost* per user, inside the engine | fails **open** |
+| `app_db.rate_limit` | requests to expensive endpoints, before the work starts | **per budget** |
+
+The third closes the gap between the other two: `/analyze` walks an entire schema
+and was unmetered, `/auth/refresh` was unmetered, and `/ai-providers/{id}/test`
+makes this server issue an outbound request at a caller's direction.
+
+Its failure mode is deliberately **not uniform**:
+
+- **Throughput budgets fail open** (`/analyze`, `/query`, `/ai-providers/{id}/test`).
+  If the shared window is unreachable they still serve: the cost of not limiting is
+  a warm database, and the cost of refusing is an outage caused by a cache being
+  down.
+- **`/auth/refresh` degrades closed.** It mints sessions, so it follows the
+  `login_guard` rule instead — a control protecting authentication must not vanish
+  exactly when the system is already degraded.
+
+Budgets are per (caller, endpoint) over a 15-minute window, keyed by user when the
+request carries a *verifiable* token and by client IP otherwise. An unverifiable
+token falls back to the IP rather than trusting its claims — otherwise anyone could
+mint `sub: whatever` locally and get a fresh budget per request.
+
+Sizes (`app_db/rate_limit.py`) are abuse ceilings, not quotas: a limit an ordinary
+session can reach becomes a support ticket, and the first response to a limiter
+that fires on normal use is to disable it.
+
+### Audit-log tamper evidence
+
+Every `audit_logs` row carries an HMAC over its content, keyed by a value derived
+from `APP_SECRET_KEY` through a distinct label (`app_db/audit_integrity.py`).
+Database write access alone is no longer enough to alter an audit row
+undetectably: forging a signature also requires the application secret, and those
+are usually held by different people.
+
+Check with `python scripts/verify_audit_log.py` — periodically, and before relying
+on these rows as evidence. Exit `0` if every signed row verifies, `1` otherwise.
+
+The output distinguishes **three** outcomes, not two:
+
+- **verified** — signature matches.
+- **unsigned** — written before signing existed. Reported separately, because
+  calling it tampering would be wrong and calling it fine would be worse.
+- **failed** — content no longer matches its signature.
+
+**A failure is not proof of malice.** Restoring a backup taken under a different
+`APP_SECRET_KEY`, or rotating that secret, invalidates signatures made by the old
+key: the rows are intact, the key that vouched for them is gone. Rotation
+deliberately does *not* re-sign audit rows — a rotation tool that could re-sign
+them is a tool that can forge them.
+
+**Deletion is not detected.** A per-row signature says nothing about how many rows
+there should be. A hash chain would catch it and was deliberately not built:
+computing the previous row's hash at insert time means reading the tail inside the
+writing transaction, and two workers doing that concurrently fork the chain — so
+the verifier would report tampering on an honest system, and the first false alarm
+is what teaches everyone to ignore the next one. Closing it needs a
+database-assigned monotonic sequence; see `docs/ROADMAP.md`.
+
+### Rotating the at-rest encryption key
+
+Connection passwords, AI provider keys and MFA secrets are Fernet-encrypted with a
+key derived from `APP_SECRET_KEY`. Changing that secret used to make all of them
+permanently unreadable — no second key was tried and there was no re-encrypt path,
+so "rotate your secrets periodically" was, here, advice the system could not
+survive.
+
+`MultiFernet` now encrypts with the current key and decrypts with any key still
+listed in `APP_SECRET_KEYS_PREVIOUS`, which turns rotation into a procedure with
+no window where anything is unreadable:
+
+1. Move the old value into `APP_SECRET_KEYS_PREVIOUS`, put the new one in
+   `APP_SECRET_KEY`. Existing ciphertext still decrypts; new writes use the new key.
+2. `python scripts/rotate_secrets.py --dry-run` — reports what would change and
+   writes nothing. **Run this first**: it is also the check that every row can
+   still be decrypted, which is what you want to know before dropping a key.
+3. `python scripts/rotate_secrets.py` — re-encrypts every stored secret under the
+   current key.
+4. Remove the old value from `APP_SECRET_KEYS_PREVIOUS`.
+
+Skipping step 3 destroys every stored secret. The script exits non-zero and says
+so if any row failed to decrypt, precisely so step 4 is not taken on a bad result.
+
+Three columns hold encrypted values — `database_connections.password_encrypted`,
+`ai_provider_configs.api_key_encrypted`, `users.mfa_secret`. A new encrypted column
+must be added to `TARGETS` in the script; one that is missing is left on the old
+key and is only discovered when that key is finally dropped.
+
+### Browser sessions — httpOnly refresh cookie
+
+Both tokens used to live in `localStorage`, so any XSS anywhere in the frontend
+was a full account takeover that **outlived the 15-minute access token** — and the
+account can query connected business databases.
+
+- **The refresh token is an httpOnly, `SameSite=Strict`, `Secure`-in-production
+  cookie** scoped to `/auth`. Script cannot read it. An XSS can still *use* the
+  session while the page is open; it can no longer walk away with one that keeps
+  working afterwards. This is not a cure for XSS — it removes the durable prize.
+- **The access token lives in a module variable**, gone on reload and restored by
+  a refresh call. Nothing token-shaped is persisted by the browser.
+- **Opt-in per request** (`X-Auth-Mode: cookie`). The CLI has no cookie jar and
+  stores tokens in a file, so it sends nothing and gets exactly the response it
+  always did: `refresh_token` in the body, no cookie. Sniffing the User-Agent to
+  guess would be fragile and invisible.
+- **CSRF: double-submit.** A cookie is attached by the browser whether or not the
+  request was intended. `SameSite=Strict` blocks the cross-site send; the
+  `dbbuddy_csrf` cookie echoed in `X-CSRF-Token` is the defence in depth for what
+  it does not cover. Cheap, because exactly one endpoint reads the cookie —
+  `/auth/refresh`. Everything else authenticates from the `Authorization` header,
+  which a cross-origin form cannot set. A refresh token supplied in the *body* needs
+  no CSRF check: putting it there is the definition of not-forged.
+- **The two cookies are scoped differently on purpose.** The refresh cookie is
+  `Path=/auth` — a cookie that is not sent cannot be stolen from a request that had
+  no business carrying it. The CSRF cookie is `Path=/`, because it is not a
+  credential and the client must read it from whatever page it is on. Scoped to
+  `/auth` it was invisible at `/app`, and the page-load refresh sent an empty
+  token, failed the check, and logged the user out on every reload.
+- **Logout clears both cookies**, rather than leaving a stale one to be sent on
+  every `/auth` request for the rest of its lifetime.
+
+### Email verification
+
+Opt-in via `REQUIRE_EMAIL_VERIFICATION` (default **off**).
+
+- **Off by default on purpose.** Enforcing it would change what every existing
+  install, the Docker demo and every developer setup already do, and none of them
+  asked. A hosted deployment that wants proof of address opts in — the same shape
+  as every other production-only setting here.
+- **Existing accounts are grandfathered.** Migration `0017` backfills every row
+  that predates the column as verified. Retroactively locking out a user base on
+  upgrade is an outage, not a hardening.
+- **What it gates is signing in**, not account creation. Registration still
+  creates the account and returns 202 instead of a token pair; silently refusing
+  to create one would be indistinguishable from a broken form.
+- Tokens follow the password-reset rules exactly: hashed at rest, single use,
+  expiring (`EMAIL_VERIFICATION_TTL_HOURS`, default 48 — longer than a reset,
+  because confirming the next morning is normal and the cost of expiry is a
+  resend). Issuing a new link spends the previous one.
+- `POST /auth/verify-email/request` answers identically for an unknown address, an
+  inactive account and one already verified, and is throttled before the lookup.
+
+### Password reset
+
+`POST /auth/password-reset/request` → `POST /auth/password-reset/confirm`.
+
+- **The request endpoint never reveals whether an address has an account.** Same
+  202, same body, for a known address, an unknown one, and a deactivated account.
+  An unauthenticated endpoint that answers differently is a list of who has an
+  account here; the cost is that a typo fails silently, which is the right way
+  round.
+- **Throttled before the lookup**, and counted whether or not the account exists —
+  throttling only real addresses would make the 429 itself the enumeration signal.
+  Five requests per (IP, address) per window (`MAX_RESET_REQUESTS`). The endpoint
+  mails a third party on request, so unthrottled it is a way to flood an inbox
+  using this server's reputation.
+- **Only the SHA-256 hash of the token is stored** (`password_reset_tokens`), like
+  API keys and recovery codes — the token is high-entropy, so a fast hash is
+  sufficient. The raw value exists in the email and nowhere else.
+- **Single use, and short lived** (`PASSWORD_RESET_TTL_MINUTES`, default 30).
+  Issuing a new link spends any outstanding one: two live links means the older
+  keeps working after the user has already recovered the account.
+- **Every failure is the same 400.** Distinguishing "unknown" from "expired" from
+  "already used" only helps someone holding a token they should not have.
+- **A completed reset bumps `token_version`**, ending every outstanding access and
+  refresh token, and calls `invalidate_revocation()` so the change is not delayed
+  by the claims-only cache. A reset usually means the old password may be known to
+  someone else.
+- **Deactivated accounts get no link.** Whoever deactivated the account made that
+  call; a reset would undo it.
+
+Delivery is pluggable (`backend/app_db/email.py`): SMTP when `SMTP_HOST` is set,
+otherwise the message is logged rather than sent, so a fresh install does not look
+broken. Send failures are swallowed and logged — raising would answer "does this
+address exist?" with a 500.
+
 ### Personal API keys (CLI / automation)
 - **Long-lived credentials** for the CLI and unattended automation. A key is
   minted per user (`POST /auth/keys`) and shown **exactly once**; only its
@@ -47,8 +263,8 @@ Each user row carries an integer `token_version` that is embedded in every
 refresh token. `POST /auth/refresh` is honored only while the token's version
 matches the user's current value, so bumping it **instantly invalidates every
 outstanding refresh token** — no denylist, no Redis, no cleanup job. The version
-is bumped on **logout**, **MFA disable**, and **admin deactivation** (add a bump
-to any future credential/security change, e.g. a password reset). See
+is bumped on **logout**, **MFA disable**, **admin deactivation**, and **password
+reset** (add a bump to any future credential/security change). See
 [`refresh-token-revocation`](../backend/app_db/routers/auth.py).
 
 The **access token** carries the same integer as a `tv` claim, and it *is*
@@ -70,7 +286,21 @@ difference is a security window:
 | Deployment | Time to revoke |
 | --- | --- |
 | Single worker | Next request. `invalidate_revocation()` drops the entry synchronously. |
-| N workers | Next request **on the worker that handled the logout**; up to `AUTH_REVOCATION_CACHE_TTL` on the other N−1. |
+| N workers, Redis reachable | Next request everywhere. The revoking process publishes the user id on `dbbuddy:revocation`; every worker drops its own entry on receipt (measured at ~40 ms across two processes). |
+| N workers, no Redis | Next request on the worker that handled the logout; up to `AUTH_REVOCATION_CACHE_TTL` on the other N−1 — the previous behaviour, unchanged. |
+
+Broadcast rather than a shared read, because the two obvious alternatives cost
+more than they save: consulting Redis per request replaces one DB read per window
+with one Redis read per *request*, which is the property the cache exists to
+protect; and shortening the TTL narrows the window without closing it, paying in
+database load. A publish costs nothing on the request path and converges in a
+fan-out.
+
+The subscriber polls with a timeout rather than blocking on `listen()`. The shared
+client carries a short `socket_timeout` — right for request-path commands, where a
+hung Redis must not stall a query — and a blocking listen raises inside a second
+on an idle channel, killing the thread. The feature would then look healthy and
+silently stop working.
 
 The cache is process-local, so `invalidate_revocation()` reaches only the worker
 that ran it — the same limitation as `erp_concurrency` and the prepared DB

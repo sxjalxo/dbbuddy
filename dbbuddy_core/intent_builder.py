@@ -128,6 +128,167 @@ def requests_grouping(query: str) -> bool:
     return bool(_GROUPING_PHRASE.search(query or ""))
 
 
+def strip_measure_only_select(kept: List[Dict], aggregation: Optional[Dict],
+                             requested_grouping: bool) -> List[Dict]:
+    """Drop the aggregation's own column from a kept-dimension list.
+
+    The measure is never the grain. This matters because the semantic enhancer
+    applies a learned mapping by *appending the column reference* to the query
+    text: "total amount by region" becomes "total amount by region
+    payments.amount payments". That is indistinguishable from the user naming the
+    column, so retrieval returns it, it survives into the kept list, and the
+    branch that binds the actual dimension is skipped because the list already
+    looks populated. The plan ends up with an aggregate and no grouping — a
+    single global total answering a "by region" question, and an instance that
+    had learned something answering worse than a cold one.
+
+    Gated on the question actually asking for a grain. Without that gate, "total
+    amount" would have its select cleared and the dimension branch would go
+    looking for a grouping nobody requested.
+    """
+    if not kept or not requested_grouping:
+        return kept
+    agg_col = (aggregation or {}).get("column") or {}
+    agg_ref = (agg_col.get("table"), agg_col.get("column"))
+    if not all(agg_ref):
+        return kept
+    return [c for c in kept
+            if (c.get("table"), c.get("column")) != agg_ref]
+
+
+def prefer_label_over_key(kept: List[Dict], schema: Dict[str, List[str]],
+                          column_roles: Optional[Dict[str, Dict[str, str]]] = None) -> List[Dict]:
+    """Swap a grouping key for its table's human label, when there is one.
+
+    ``grouping_column_refs`` yields ``regions.region_id`` before
+    ``regions.region_name`` — both match the token "region" — and the filter that
+    picks the grain takes whichever arrives first. Grouping on the key answers at
+    the right grain with the wrong label: eight rows of integers, and a
+    near-identical question ("total amount by region") answering with names
+    instead.
+
+    The dimension-binding branch further down already resolves the label via
+    ``_find_identifier_column``; it just never runs once the select list is
+    non-empty. This applies the same preference to a grain that is already chosen.
+
+    A table with nothing but a key keeps its key — that is the honest answer for a
+    table that has no label to offer.
+    """
+    if not kept:
+        return kept
+    out: List[Dict] = []
+    seen = set()
+    for col in kept:
+        table, column = col.get("table"), col.get("column")
+        if table and column and is_identifier_name(column):
+            label = _find_identifier_column(table, schema, column_roles)
+            if label and label != column:
+                col = {**col, "column": label, "alias": label}
+        ref = (col.get("table"), col.get("column"))
+        if ref in seen:
+            continue
+        seen.add(ref)
+        out.append(col)
+    return out
+
+
+# The words a grouping phrase can introduce, and the trailing words that end it.
+# "by region last quarter" groups by region, not by "quarter".
+# A qualified reference ("payments.amount") terminates the phrase. The semantic
+# enhancer appends learned mappings to the query text, and those are never part of
+# what the user asked to group by. Without that terminator the phrase failed to
+# match at all on any instance that had learned something — so the narrowing below
+# silently stopped working exactly where the enhancer had already made the grain
+# harder to find.
+_GROUPING_PHRASE_TAIL = re.compile(
+    r"\b(?:per|by|for each|each)\s+([a-z_]+(?:\s+[a-z_]+)*?)"
+    r"(?=\s+(?:last|this|next|past|over|since|between|from|where|in|during|for)\b"
+    r"|\s+\S*\."
+    r"|\s*$)",
+    re.IGNORECASE,
+)
+
+
+def narrow_to_phrase_head(kept: List[Dict], query: str) -> List[Dict]:
+    """Keep the candidate dimension that matches the head of the grouping phrase.
+
+    "total amount by product category" grouped by ``product_name``, ``category``
+    *and* ``product_id`` — 60 rows, one per product, for a question that asked for
+    five categories. Both ``product_name`` and ``category`` match a token in
+    "product category", and the filter that picks the grain keeps every match.
+
+    English puts the head noun last: "product category" is a kind of category, not
+    a kind of product. So the last word of the phrase decides.
+
+    Conservative on purpose. If narrowing would leave nothing, the original set is
+    returned — "top 5 customers by total payment amount" has a head ("amount")
+    that belongs to the measure, and stripping the real grain there would be worse
+    than keeping an extra column.
+    """
+    if not kept or len(kept) < 2:
+        return kept
+    match = _GROUPING_PHRASE_TAIL.search(query or "")
+    if not match:
+        return kept
+    words = [w for w in match.group(1).lower().split() if w]
+    if len(words) < 2:
+        return kept
+    head = words[-1]
+
+    narrowed = [
+        c for c in kept
+        if head in str(c.get("column", "")).lower().split("_")
+    ]
+    return narrowed or kept
+
+
+# Aggregates that require a number. COUNT counts rows of anything; MIN/MAX are
+# defined for text and dates too ("earliest order", "last name alphabetically").
+_NUMERIC_ONLY_AGGREGATES = {"SUM", "AVG"}
+
+
+def aggregation_is_type_safe(aggregation: Optional[Dict],
+                             column_types: Optional[Dict[str, Dict[str, str]]]) -> bool:
+    """Whether this aggregate can legally be applied to the column it names.
+
+    The `legacy` dataset has a table `Customer` with a text column also called
+    `Customer`. Asked for "total customer lifetime value", the engine matched the
+    word and compiled ``SUM("Customer"."Customer")``. PostgreSQL rejects it —
+    ``function sum(text) does not exist`` — while SQLite coerces text to a number
+    and returns 0.0, so the defect was invisible for as long as the correctness
+    suites ran on SQLite alone.
+
+    Returning False here means no aggregation resolves, which is the honest
+    outcome: the question still carries an aggregation signal the plan does not
+    satisfy, so the dropped-clause check lowers confidence and the user is told
+    the engine did not understand, rather than handed a zero that looks like an
+    answer.
+
+    Permissive when the type is unknown — refusing there would turn "we don't
+    know" into "no" and disable aggregation for every caller with no column types,
+    which is the same safe default the rest of the extractor documents.
+    """
+    if not isinstance(aggregation, dict):
+        return True
+    function = str(aggregation.get("function") or "").upper()
+    if function not in _NUMERIC_ONLY_AGGREGATES:
+        return True
+
+    column = aggregation.get("column")
+    if not isinstance(column, dict):
+        return True
+    table, name = column.get("table"), column.get("column")
+    if not table or not name or not column_types:
+        return True
+
+    declared = (column_types.get(table) or {}).get(name)
+    if not declared:
+        return True
+    from dbbuddy_core.type_handlers import classify_sql_type
+
+    return classify_sql_type(declared) == "numeric"
+
+
 def has_aggregation_signal(query: str) -> bool:
     """Whether the question asks for an aggregate at all.
 
@@ -2033,6 +2194,14 @@ def build_query_intent(query: str, retrieved_context: Dict, vector_store, schema
         aggregation = aggregation_with_widening(query, intent["select"], schema,
                                                 intent["tables"], column_types,
                                                 primary_keys, measure_ties)
+        # A measure the engine cannot legally sum is not a measure. Dropping it
+        # here leaves the question's aggregation signal unsatisfied, which the
+        # confidence check reports — better than emitting SQL the database
+        # refuses, or (on a permissive engine) a zero that reads as an answer.
+        if aggregation and not aggregation_is_type_safe(aggregation, column_types):
+            logger.debug("Dropping %s over a non-numeric column: %s",
+                         aggregation.get("function"), aggregation.get("column"))
+            aggregation = None
         # FIX: Use strict dict structure
         if aggregation:
             intent["aggregation"] = {
@@ -2061,6 +2230,17 @@ def build_query_intent(query: str, retrieved_context: Dict, vector_store, schema
                 grouping_cols = _grouping_columns(query, schema, intent["tables"])
                 kept = [c for c in intent["select"]
                         if c.get("column", "").lower() in grouping_cols]
+                # A learned mapping reaches this point as ordinary query text
+                # (the enhancer appends "payments.amount"), so the measure can
+                # masquerade as the dimension and skip the binding below.
+                kept = strip_measure_only_select(
+                    kept, aggregation, requests_grouping(query))
+                # A key and its label both match the dimension's token, and the
+                # filter above takes whichever came first. Grouping on the key is
+                # the right grain with an unreadable label.
+                kept = prefer_label_over_key(kept, schema, column_roles)
+                # "by product category" names one dimension, not one per word.
+                kept = narrow_to_phrase_head(kept, query)
                 # "per <table>" names the dimension as an entity, not a column
                 # ("total account balance of customers per nation"). Nothing in
                 # the select then survives the wipe, and the planner falls back

@@ -1,0 +1,35 @@
+version: 2
+
+updates:
+  # `requirements.txt` is the source of truth for a deployment and uses floors,
+  # not pins, so most updates land without a diff here. Dependabot still matters
+  # for the ones that do: a floor that has to move because the old release is
+  # vulnerable.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for routine version bumps; security updates still arrive on their
+      # own so they are never buried in a group.
+      python-minor:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      radix:
+        patterns: ["@radix-ui/*"]
+      tanstack:
+        patterns: ["@tanstack/*"]
+      js-minor:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

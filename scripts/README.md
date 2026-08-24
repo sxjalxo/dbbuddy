@@ -9,7 +9,9 @@ root with the project interpreter (the package is installed editable, so
 | `debug_memory.py` | Prints the current semantic-learning memory state (mappings, column/table usage) — useful when debugging the learning subsystem. |
 | `run_validation.py` | Runs the `SystemValidator` suite (determinism, cache consistency, adversarial queries, latency). Works out of the box against a built-in demo schema; pass `--schema <file.json>` or live-DB flags to validate a real schema. Exit 0 if the core checks pass. |
 | `benchmarks/` | Performance suite — one file per subsystem, plus an end-to-end pipeline run. See below. |
-| `dogfood/` | Correctness suite — runs the engine against populated databases and scores answers with **invariants** rather than expected values. `run.py --dataset erp\|hospital\|legacy\|employees\|adventureworks\|tpch\|tpcds\|airportdb` — run one at a time. See [DEVELOPER_GUIDE.md](../docs/DEVELOPER_GUIDE.md#correctness-loop-dogfooding). |
+| `dogfood/` | Correctness suite — runs the engine against populated databases and scores answers with **invariants** rather than expected values. `run.py --dataset erp\|hospital\|legacy\|employees\|adventureworks\|tpch\|tpcds\|airportdb` — run one at a time. Add `--target postgres` to run against a real PostgreSQL server instead of the SQLite shim: the shim rewrites the statement on the way through, so it cannot grade the SQL itself. See [DEVELOPER_GUIDE.md](../docs/DEVELOPER_GUIDE.md#correctness-loop-dogfooding). |
+| `rotate_secrets.py` | Re-encrypts every at-rest secret under the current `APP_SECRET_KEY` — step 2 of a key rotation. `--dry-run` first: it reports what would change and is also the check that every row still decrypts. Exits non-zero if any row failed, so the old key is not dropped on a bad result. |
+| `verify_audit_log.py` | Checks every `audit_logs` row against its signature. Separates *unsigned* (written before signing existed) from *failed*. Exit 0 if every signed row verifies, 1 otherwise. Run it periodically, and before relying on those rows as evidence. |
 | `exercise_schemas.py` | Exploratory harness: runs the schema-adaptive layers (type classification, FK/relationship inference, filter/name-literal extraction) against realistic ERP/domain schemas (SAP, Odoo, ERPNext, healthcare, …) and prints a capability matrix. Not a pass/fail test — used to find where the heuristics break. |
 
 ```bash
@@ -37,6 +39,30 @@ gitignored because they are large.
 
 The suite exits non-zero when it finds a crash, a failed invariant, a golden-value
 miss, or a confidence problem.
+
+### PostgreSQL target (`--target postgres`)
+
+The SQLite target is fast and needs no server, and it cannot grade the SQL itself:
+it declares the engine as MySQL and rewrites the statement on the way through
+(`%s` → `?`, backticks → double quotes). SQL that PostgreSQL rejects outright can
+execute there and return rows — which is how `ORDER BY "SUM(...)"` shipped under
+eight green datasets.
+
+`--target postgres` copies the dataset into a real server and runs the same suites
+with the engine declared as PostgreSQL and nothing rewritten:
+
+```bash
+.venv/Scripts/python.exe scripts/dogfood/run.py --dataset erp --target postgres
+```
+
+Connection from `DOGFOOD_PG_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_DB`,
+defaulting to the demo stack's server on 5442. The target database is **dropped and
+recreated per run**, so point it at a scratch name, not your application database.
+
+Use it for shape, not scale: the copy is row-by-row, which is fine for the generated
+sets and unreasonable for `employees` (~4M rows) or `airportdb` (up to ~59M). Those
+stay on SQLite. The nightly integration workflow runs `erp`, `hospital`, `legacy`,
+`tpch` and `tpcds` against PostgreSQL.
 ## Benchmarks (`benchmarks/`)
 
 One file per subsystem so a regression names its own cause, rather than a single

@@ -14,6 +14,16 @@ import os
 logger = logging.getLogger(__name__)
 
 
+def parse_previous_keys(raw: str | None) -> list[str]:
+    """Split the comma-separated retired-key list, dropping blanks.
+
+    Tolerant of stray whitespace and trailing commas: this is edited by hand in a
+    deployment's environment, usually under time pressure, and a silently ignored
+    key would look exactly like data loss.
+    """
+    return [part.strip() for part in (raw or "").split(",") if part.strip()]
+
+
 class Settings:
     # ── Deployment environment ────────────────────────────────────────────────
     # "development" (default), "production", or "test". Only "production" turns
@@ -42,6 +52,22 @@ class Settings:
     # ERP database passwords are stored in the app DB encrypted, never plaintext.
     APP_SECRET_KEY: str = os.getenv("APP_SECRET_KEY", "")
 
+    # Keys this deployment has retired but whose ciphertext may still be in the
+    # database. Newest first, comma-separated. Everything is *encrypted* with
+    # APP_SECRET_KEY and *decrypted* with whichever of these still fits, which is
+    # what makes rotation a procedure rather than a data loss:
+    #
+    #   1. move the old value here, put the new one in APP_SECRET_KEY — nothing
+    #      becomes unreadable, and new writes use the new key;
+    #   2. run scripts/rotate_secrets.py to re-encrypt at rest;
+    #   3. remove the old value from this list.
+    #
+    # Skipping step 2 and going straight to step 3 destroys every stored ERP
+    # password, AI provider key and MFA secret.
+    APP_SECRET_KEYS_PREVIOUS: list[str] = parse_previous_keys(
+        os.getenv("APP_SECRET_KEYS_PREVIOUS")
+    )
+
     # ── CORS ──────────────────────────────────────────────────────────────────
     # Explicit allow-list of browser origins permitted to call the API with
     # credentials. NEVER "*": a wildcard with credentials makes Starlette reflect
@@ -67,6 +93,29 @@ class Settings:
         for d in os.getenv("REGISTRATION_ALLOWED_DOMAINS", "").split(",")
         if d.strip()
     ]
+
+    # ── Email verification ────────────────────────────────────────────────────
+    # Off by default, on purpose. Enforcing it would change what an existing
+    # install, the Docker demo and every developer setup already do, and none of
+    # them asked. A hosted deployment that wants proof of address opts in — the
+    # same shape as every other production-only setting here.
+    #
+    # When on, an unverified account can be created but cannot sign in. Accounts
+    # that predate the feature are backfilled as verified by migration 0017:
+    # locking out an existing user base on upgrade is an outage, not a hardening.
+    REQUIRE_EMAIL_VERIFICATION: bool = (
+        os.getenv("REQUIRE_EMAIL_VERIFICATION", "").strip().lower() in {"1", "true", "yes", "on"}
+    )
+
+    # How long a verification link stays usable. Longer than a password reset: it
+    # is normal to register and confirm the next morning, and the consequence of
+    # an expired one is a resend rather than a locked account.
+    EMAIL_VERIFICATION_TTL_HOURS: int = int(os.getenv("EMAIL_VERIFICATION_TTL_HOURS", "48"))
+
+    # ── Password reset ────────────────────────────────────────────────────────
+    # How long a reset link stays usable. Short on purpose: the link is a bearer
+    # credential sitting in an inbox, and the whole flow is a minute's work.
+    PASSWORD_RESET_TTL_MINUTES: int = int(os.getenv("PASSWORD_RESET_TTL_MINUTES", "30"))
 
     # HS256 signs with the raw secret bytes, so anything shorter than the hash
     # output (32 bytes) weakens the MAC (see RFC 7518 §3.2). Enforced at startup.

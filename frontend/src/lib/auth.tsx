@@ -5,6 +5,7 @@ import {
   apiJson,
   clearTokens,
   getAccessToken,
+  refreshAccess,
   setAuthFailureHandler,
   setTokens,
 } from "./api/client";
@@ -48,15 +49,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // On mount, restore the session from a stored token.
+  // On mount, restore the session.
+  //
+  // The access token lives in memory, so a reload always starts without one —
+  // that is the point of moving it out of localStorage. The refresh cookie is
+  // httpOnly and therefore invisible here, so the only way to ask "is there a
+  // session?" is to try to refresh and see.
   useEffect(() => {
     (async () => {
-      if (getAccessToken()) {
-        try {
+      try {
+        if (getAccessToken() || (await refreshAccess())) {
           setUser(await apiJson<AuthUser>("/auth/me"));
-        } catch {
-          clearTokens();
         }
+      } catch {
+        clearTokens();
       }
       setLoading(false);
     })();

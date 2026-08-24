@@ -32,18 +32,45 @@ class PostgresDialect(Dialect):
         supports_regex=True,
         supports_ilike=True,           # native ILIKE
         identifier_quote_char='"',
+        unquoted_identifier_case="lower",
     )
 
     @property
     def capabilities(self) -> DialectCapabilities:
         return self._capabilities
 
+    # ── Schema scope ──────────────────────────────────────────────────────────
+    # Introspection is scoped to ``current_schemas(false)`` — the schemas actually
+    # on this connection's ``search_path`` — not to a hardcoded ``public``.
+    #
+    # With a default connection that resolves to ``public`` and nothing changes.
+    # With ``db_schema`` set (see ``connect``) it resolves to that schema, so a
+    # database whose tables live in a named schema is visible at all. Before this,
+    # such a database reported *no tables*: not an error, just an empty schema and
+    # every question failing to ground.
+    #
+    # Scoping to the search path rather than to a schema name is what keeps
+    # discovery and execution consistent: an unqualified identifier in the emitted
+    # SQL resolves through the same path the tables were found on.
+
     # ── Connection ────────────────────────────────────────────────────────────
 
-    def connect(self, host, user, password, database, port=None):
+    def connect(self, host, user, password, database, port=None, db_schema=None):
         kwargs = dict(host=host, user=user, password=password, dbname=database)
         if port:
             kwargs["port"] = int(port)
+        if db_schema:
+            # Set the search path for the whole session rather than qualifying
+            # every emitted identifier. Introspection reads the same path (see
+            # ``_schema_scope``), so what the engine discovers and what an
+            # unqualified reference resolves to cannot drift apart.
+            #
+            # The named schema alone, not "<schema>,public": a user who points DB
+            # Buddy at a schema means that schema, and silently unioning `public`
+            # would resurface exactly the surprise this setting exists to remove.
+            # Built-ins are unaffected — `pg_catalog` is always searched first.
+            escaped = db_schema.replace('"', '""')
+            kwargs["options"] = f'-c search_path="{escaped}"'
         return psycopg2.connect(**kwargs)
 
     def ping(self, raw_conn) -> None:
@@ -84,7 +111,7 @@ class PostgresDialect(Dialect):
             """
             SELECT table_name
             FROM information_schema.tables
-            WHERE table_schema = 'public'
+            WHERE table_schema = ANY(current_schemas(false))
               AND table_type = 'BASE TABLE'
             ORDER BY table_name
             """
@@ -97,7 +124,7 @@ class PostgresDialect(Dialect):
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_name = %s
-                  AND table_schema = 'public'
+                  AND table_schema = ANY(current_schemas(false))
                 ORDER BY ordinal_position
                 """,
                 (table,),
@@ -113,7 +140,7 @@ class PostgresDialect(Dialect):
             """
             SELECT table_name
             FROM information_schema.tables
-            WHERE table_schema = 'public'
+            WHERE table_schema = ANY(current_schemas(false))
               AND table_type = 'BASE TABLE'
             ORDER BY table_name
             """
@@ -130,7 +157,7 @@ class PostgresDialect(Dialect):
               ON tc.constraint_name = kcu.constraint_name
              AND tc.table_schema   = kcu.table_schema
             WHERE tc.constraint_type = 'PRIMARY KEY'
-              AND tc.table_schema = 'public'
+              AND tc.table_schema = ANY(current_schemas(false))
             """
         )
         pk_cols: set[tuple[str, str]] = set(cur.fetchall())
@@ -141,7 +168,7 @@ class PostgresDialect(Dialect):
                 SELECT column_name, data_type, is_nullable, column_default
                 FROM information_schema.columns
                 WHERE table_name = %s
-                  AND table_schema = 'public'
+                  AND table_schema = ANY(current_schemas(false))
                 ORDER BY ordinal_position
                 """,
                 (table,),
@@ -169,7 +196,7 @@ class PostgresDialect(Dialect):
                   ON ccu.constraint_name = tc.constraint_name
                  AND ccu.table_schema   = tc.table_schema
                 WHERE tc.constraint_type = 'FOREIGN KEY'
-                  AND tc.table_schema   = 'public'
+                  AND tc.table_schema   = ANY(current_schemas(false))
                   AND tc.table_name     = %s
                 """,
                 (table,),

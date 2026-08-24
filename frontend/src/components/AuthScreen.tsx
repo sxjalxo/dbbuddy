@@ -3,11 +3,16 @@ import { Database, Loader2, ShieldCheck } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { apiJson } from "@/lib/api/client";
 import { useAuth } from "@/lib/auth";
 
 export function AuthScreen() {
   const { login, completeMfaLogin, register } = useAuth();
-  const [mode, setMode] = useState<"login" | "register">("login");
+  const [mode, setMode] = useState<"login" | "register" | "forgot">("login");
+  // The request endpoint answers the same way whether or not the address has an
+  // account, so this screen must too — anything that distinguished them here
+  // would hand back the enumeration oracle the API refuses to give.
+  const [resetRequested, setResetRequested] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
@@ -22,7 +27,13 @@ export function AuthScreen() {
     setError(null);
     setBusy(true);
     try {
-      if (mode === "register") {
+      if (mode === "forgot") {
+        await apiJson("/auth/password-reset/request", {
+          method: "POST",
+          body: JSON.stringify({ email: email.trim() }),
+        });
+        setResetRequested(true);
+      } else if (mode === "register") {
         await register(email.trim(), password, fullName.trim() || undefined);
       } else {
         const outcome = await login(email.trim(), password);
@@ -112,7 +123,11 @@ export function AuthScreen() {
           </div>
           <h1 className="font-display text-2xl font-semibold tracking-tight">DB Buddy</h1>
           <p className="text-sm text-muted-foreground">
-            {mode === "login" ? "Sign in to your workspace" : "Create your account"}
+            {mode === "login"
+              ? "Sign in to your workspace"
+              : mode === "register"
+                ? "Create your account"
+                : "We'll email you a link to set a new one"}
           </p>
         </div>
 
@@ -144,18 +159,27 @@ export function AuthScreen() {
               autoComplete="email"
             />
           </div>
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Password</label>
-            <Input
-              type="password"
-              required
-              minLength={8}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={mode === "register" ? "At least 8 characters" : "••••••••"}
-              autoComplete={mode === "login" ? "current-password" : "new-password"}
-            />
-          </div>
+          {mode !== "forgot" && (
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Password</label>
+              <Input
+                type="password"
+                required
+                minLength={8}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={mode === "register" ? "At least 8 characters" : "••••••••"}
+                autoComplete={mode === "login" ? "current-password" : "new-password"}
+              />
+            </div>
+          )}
+
+          {resetRequested && (
+            <p className="text-xs text-muted-foreground">
+              If that address has an account, a reset link is on its way. The link works once and
+              expires in 30 minutes.
+            </p>
+          )}
 
           {error && <p className="text-xs text-destructive">{error}</p>}
 
@@ -165,7 +189,11 @@ export function AuthScreen() {
             className="mt-1 gap-2 brand-gradient text-primary-foreground"
           >
             {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-            {mode === "login" ? "Sign in" : "Create account"}
+            {mode === "login"
+              ? "Sign in"
+              : mode === "register"
+                ? "Create account"
+                : "Email me a reset link"}
           </Button>
 
           <button
@@ -173,11 +201,30 @@ export function AuthScreen() {
             className="mt-1 text-center text-xs text-muted-foreground hover:text-foreground"
             onClick={() => {
               setError(null);
+              setResetRequested(false);
               setMode(mode === "login" ? "register" : "login");
             }}
           >
-            {mode === "login" ? "No account? Create one" : "Already have an account? Sign in"}
+            {mode === "login"
+              ? "No account? Create one"
+              : mode === "register"
+                ? "Already have an account? Sign in"
+                : "Back to sign in"}
           </button>
+
+          {mode === "login" && (
+            <button
+              type="button"
+              className="text-center text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                setError(null);
+                setResetRequested(false);
+                setMode("forgot");
+              }}
+            >
+              Forgot your password?
+            </button>
+          )}
         </form>
 
         <p className="mt-4 text-center text-[11px] text-muted-foreground/70">

@@ -14,6 +14,11 @@ class DBConfig:
     password: str
     database: str
     port: int | None = None
+    # A namespace within the database, for engines that have one. PostgreSQL
+    # tables outside ``public`` are invisible without it; MySQL has no such level
+    # and ignores it. None means "whatever the connection's own search path says",
+    # which is the previous behaviour.
+    db_schema: str | None = None
     engine: DatabaseEngine = DatabaseEngine.MYSQL
     ai: bool = False
     ai_provider: str = "local"

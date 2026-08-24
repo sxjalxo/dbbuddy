@@ -45,34 +45,58 @@ whole of this milestone.
 - [x] A second workflow running `pytest -m integration` against the docker-compose database
   tier — nightly and on demand rather than per-PR, so a container hiccup never blocks a
   contributor.
-- [ ] A job running the suite against **PostgreSQL**, not only SQLite — production is
-  Postgres, and a green SQLite run does not prove storage constraints hold.
-- [ ] Dependabot + `pip-audit` + `npm audit`.
-- [ ] A compiled lock file (`uv pip compile`) alongside the version floors, so a build is
-  reproducible.
+- [x] A job running the suite against **PostgreSQL**, not only SQLite — production is
+  Postgres, and a green SQLite run does not prove storage constraints hold. Covers the
+  *application* database; the engine defects that only appear on PostgreSQL need a
+  PostgreSQL query *target*, which is the next item.
+- [x] `tests/integration/test_generated_sql_executes.py` — compile a representative plan,
+  execute it, require the database to accept it. This is the check that would have caught
+  the `ORDER BY "SUM(...)"` defect: SQLite reads the broken form as a string constant and
+  returns rows, so no amount of SQLite testing could see it. Runs in the nightly
+  integration workflow.
+- [x] Dependabot + `pip-audit` + `npm audit`, in a nightly workflow rather than per-PR — an
+  advisory published against a transitive dependency has nothing to do with the pull request
+  in front of it, and blocking unrelated work on it trains people to ignore a red check.
+- [x] Dogfood against a **PostgreSQL target** (`run.py --target postgres`): the dataset is
+  copied into a real server and the suites run with the engine declared as PostgreSQL and
+  nothing rewritten. `erp`, `hospital`, `legacy`, `tpch` and `tpcds` all pass; the matrix
+  runs nightly. Its first run found two more defects — mixed-case identifiers emitted
+  unquoted, and `SUM` over a text column.
+- [ ] The large imported datasets (`employees`, `airportdb`) stay SQLite-only: the copy is
+  row-by-row, so scale still lives on the shim. A `COPY`-based loader would fix that.
+- [x] A compiled lock file (`requirements.lock`, `uv pip compile --universal`) alongside the
+  version floors. CI still installs from the floors on purpose — resolving fresh is what
+  catches an upstream release that breaks us.
 
 ### Account lifecycle
 These are the reason a self-hoster currently gets stuck.
 
-- [ ] **Password reset** — request/confirm with a single-use hashed token. Bumps
-  `token_version`, which already revokes every outstanding session.
-- [ ] **Email verification** on registration.
-- [ ] A pluggable email sender (SMTP, plus console output in development) with no hard
-  dependency on any SaaS.
+- [x] **Password reset** — request/confirm with a single-use hashed token, throttled before
+  the account lookup so the 429 is not itself an enumeration signal. Bumps `token_version`,
+  which ends every outstanding session.
+- [x] A pluggable email sender (SMTP, console in development) with no hard dependency on any
+  SaaS. `SMTP_HOST` unset means "log the message", so a fresh install does not look broken.
+- [x] **Email verification** on registration (`REQUIRE_EMAIL_VERIFICATION`, default off, with
+  existing accounts grandfathered by migration `0017`), plus a `/verify-email` route.
+- [x] A reset form in the web app: a "Forgot your password?" mode on the sign-in screen, and
+  a `/reset-password` route for the emailed link. The screen mirrors the API's refusal to
+  confirm whether an address exists.
 - [ ] Revisit whether open self-registration is the right default for a hosted profile.
 
 ### Security hardening
-- [ ] **Move the refresh token out of `localStorage`** into an httpOnly, `SameSite=Strict`
-  cookie, with the access token held in memory. Needs CSRF protection on the refresh route
-  as part of the same change.
-- [ ] **Key rotation for data at rest** — a `key_id` alongside every encrypted column,
-  `MultiFernet` with an ordered key list, and a re-encrypt script. Today, rotating
-  `APP_SECRET_KEY` orphans every stored connection credential with no recovery path.
-- [ ] **HTTP-layer rate limiting** beyond the login throttle — `/analyze` in particular is
-  expensive and currently unmetered. Keep the existing failure-mode split: the query limiter
-  fails open, anything protecting authentication degrades closed.
-- [ ] SSRF guard: resolve-then-pin the IP at connect time, closing the DNS-rebinding gap the
-  guard currently documents as out of scope.
+- [x] **Move the refresh token out of `localStorage`** into an httpOnly, `SameSite=Strict`
+  cookie, with the access token held in memory and CSRF protection on the refresh route.
+  Opt-in per request (`X-Auth-Mode: cookie`) so the CLI's contract is unchanged.
+- [x] **Key rotation for data at rest** — `MultiFernet` with an ordered key list
+  (`APP_SECRET_KEYS_PREVIOUS`) and `scripts/rotate_secrets.py`. No `key_id` column proved
+  necessary: MultiFernet tries each key on decrypt, so the column would only have recorded
+  what the ciphertext already answers.
+- [x] **HTTP-layer rate limiting** beyond the login throttle (`app_db/rate_limit.py`), on
+  `/analyze`, `/query`, `/ai-providers/{id}/test` and `/auth/refresh`. The failure-mode
+  split is preserved per budget: throughput fails open, `/auth/refresh` degrades closed.
+- [x] SSRF guard: resolve-then-pin the IP at connect time, closing the DNS-rebinding gap.
+  The rules moved to `dbbuddy_core/net_guard.py` so the engine — which makes the outbound
+  call — can enforce them at the socket, not just at the form.
 
 ---
 
@@ -106,9 +130,10 @@ returning a single global total, because its intent carries no grouping to lose.
   language.
 - [ ] Treat "the query returned an execution error" as a confidence input, not just an
   error field.
-- [ ] The remaining half is the planner, not the signal: a question with a grain phrase can
-  still compile without a `GROUP BY`. Confidence now reports that honestly (low), but the
-  SQL is still wrong.
+- [x] The planner half: a question with a grain phrase compiling without a `GROUP BY`. Four
+  causes, all fixed — the measure masquerading as the grain, a named dimension shadowing the
+  measure's date column, the key winning over the label, and a multi-word dimension becoming
+  several.
 
 ### Learning that cannot make the answer worse
 
@@ -120,9 +145,13 @@ an instance that has learned `amount -> payments.amount` (a *correct* mapping) d
 `DBBUDDY_DISABLE_LEARNING=1` makes runs repeatable, which is what made this visible, but it
 is a workaround.
 
-- [ ] An injected memory reference must not compete with the dimension for retrieval rank
+- [x] An injected memory reference must not be mistaken for the grain
+  (`strip_measure_only_select`), and must not break grouping-phrase parsing (a qualified
+  reference now terminates the phrase).
+- [ ] It still competes for retrieval *rank*, which is the remaining half — the fixes above
+  stop it doing damage, they do not stop it distorting what retrieval returns.
 - [ ] Feed plan quality back into the learning engine: a mapping that lowers it should be
-  down-weighted, not reinforced
+  down-weighted, not reinforced.
 
 ### Desktop app (Tauri)
 
@@ -156,6 +185,26 @@ Design questions to settle before writing code:
 - [ ] Bundled engine sidecar, if the standalone story is worth the install size
 - [ ] Signed installers + auto-update
 
+### PostgreSQL schemas other than `public` — engine done, platform pending
+
+Every introspection query in the PostgreSQL dialect is scoped to
+`table_schema = 'public'`. A database that keeps its tables in a named schema — which is
+ordinary for an ERP, and what tools like Hibernate and Entity Framework produce — reports
+no tables at all. There is no error, just an empty schema and a query that cannot be
+grounded.
+
+Found while building the PostgreSQL dogfood target, which had to be given a whole database
+rather than a schema to work around it.
+
+- [x] Introspect the schemas on `search_path` (`current_schemas(false)`) instead of assuming
+  `public`, and accept a schema explicitly on the connection (`DBConfig.db_schema`,
+  `dbbuddy … --schema`). Setting the session's search path rather than qualifying every
+  identifier keeps discovery and execution on the same path, so they cannot drift apart.
+- [ ] **Platform plumbing.** The engine and CLI honour it; the web app does not yet — the
+  `DatabaseConnection` record has no schema column, so a hosted user still cannot point at
+  one. Migration + API field + a form input.
+- [ ] The same question needs asking of the SQL Server dialect and its `dbo` assumption.
+
 ### Semantic-layer correction
 The engine already learns mappings. It cannot yet be *told* it is wrong.
 
@@ -183,8 +232,11 @@ Several coordination structures are per worker process: the session-revocation c
 prepared database contexts, and the per-target concurrency semaphore. Two replicas behind a
 load balancer therefore behave differently from one.
 
-- [ ] Move each to Redis, or formally support "single worker" as a deployment profile and
-  document it as such.
+- [x] **Session revocation** now broadcasts: the revoking worker publishes and every other
+  drops its cached entry on receipt (~40 ms), instead of each converging on its own TTL.
+  Falls back to the previous TTL behaviour without Redis.
+- [ ] The rest of the per-worker state — prepared DB contexts and the per-target concurrency
+  semaphore — still needs Redis or a formally supported "single worker" profile.
 
 ### Pluggable vector backend
 Embedded Chroma writes to local disk, which makes any node holding it stateful and gives two
@@ -192,6 +244,22 @@ replicas divergent semantic memory.
 
 - [ ] A backend interface behind `vector_store.py`, with **pgvector** as the natural default
   — the application database is already PostgreSQL in production.
+
+### Audit-log deletion detection
+
+Audit rows are signed, so an *edit* is detectable. A *deletion* is not — nothing in
+a per-row signature says how many rows there should be.
+
+The fix is a database-assigned monotonic sequence on `audit_logs`, so gaps are
+visible without any application-side coordination. A hash chain computed at insert
+would fork under concurrent workers and report tampering on an honest system,
+which is worse than no check at all.
+
+- [ ] A monotonic sequence column (PostgreSQL `SEQUENCE`; SQLite needs a different
+  mechanism, and gap detection can reasonably be Postgres-only)
+- [ ] Teach `scripts/verify_audit_log.py` to report gaps, flagged as *possible*
+  deletion — a rolled-back transaction also consumes a sequence value, so a gap is
+  a question, not a verdict
 
 ### Observability
 For a system whose selling point is its pipeline, the pipeline is currently invisible in

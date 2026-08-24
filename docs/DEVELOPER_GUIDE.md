@@ -22,6 +22,12 @@ A quick orientation for the next developer -- the questions you'll actually ask:
 | **Where are permissions enforced?** | [`backend/app_db/deps.py`](../backend/app_db/deps.py) — `require_permission()` / `require_token_permission()`; a user's grants come from `User.permission_names()` in [`backend/app_db/models.py`](../backend/app_db/models.py). |
 | **How do I add a new role or permission?** | [`backend/app_db/seed.py`](../backend/app_db/seed.py) — add to the `PERMISSIONS` catalogue and the role→permission mapping; `seed_roles_and_permissions()` syncs it on startup. Then gate endpoints with `require_permission("<perm>")` and the token will carry it. |
 | **How do I add a new database dialect?** | [ADDING_DATABASE_DIALECT.md](ADDING_DATABASE_DIALECT.md). |
+| **Where is password reset / email verification?** | [`routers/auth.py`](../backend/app_db/routers/auth.py) (`/password-reset/*`, `/verify-email/*`), token models in [`models.py`](../backend/app_db/models.py), sending in [`email.py`](../backend/app_db/email.py). Both follow the same rules — hashed at rest, single use, expiring, and a request endpoint that answers identically whether or not the address exists. See [SECURITY.md](SECURITY.md). |
+| **How does a browser session work?** | The refresh token is an httpOnly cookie ([`cookies.py`](../backend/app_db/cookies.py)) and the access token lives in memory in the frontend. Opt-in per request via `X-Auth-Mode: cookie`, so the CLI's response is unchanged. `/auth/refresh` is the only cookie-authenticated endpoint and requires a double-submit CSRF token. |
+| **Where are the rate limits?** | Three limiters, none redundant: [`login_guard.py`](../backend/app_db/login_guard.py) (failed sign-ins, degrades **closed**), [`dbbuddy_core/rate_limiter.py`](../dbbuddy_core/rate_limiter.py) (query cost, fails **open**), and [`rate_limit.py`](../backend/app_db/rate_limit.py) (per-endpoint HTTP budgets, failure mode **per budget**). Adding a budget means picking one deliberately. |
+| **How do I rotate the at-rest encryption key?** | Four steps, in [SECURITY.md](SECURITY.md#rotating-the-at-rest-encryption-key). `MultiFernet` reads with any key listed in `APP_SECRET_KEYS_PREVIOUS`; [`scripts/rotate_secrets.py`](../scripts/rotate_secrets.py) re-encrypts. Adding a new encrypted column means adding it to that script's `TARGETS`. |
+| **How do I check the audit log has not been altered?** | `python scripts/verify_audit_log.py`. Rows are signed by [`audit_integrity.py`](../backend/app_db/audit_integrity.py); adding a meaningful `AuditLog` column means adding it to `_SIGNED_FIELDS`, or it is a field an attacker may edit freely. |
+| **Where is outbound egress validated?** | [`dbbuddy_core/net_guard.py`](../dbbuddy_core/net_guard.py) holds the rules and [`safe_http.py`](../dbbuddy_core/safe_http.py) makes the call, resolving once and dialling the address it validated. [`backend/app_db/url_guard.py`](../backend/app_db/url_guard.py) re-exports the rules for the write path — it is the early failure, not the boundary. |
 | **How do I run migrations?** | Alembic in [`backend/migrations/`](../backend/migrations/). The app runs `alembic upgrade head` on startup; manually: `APP_DATABASE_URL=... python -m alembic upgrade head`. See [DEPLOYMENT.md](DEPLOYMENT.md). |
 | **How do I seed users?** | [`backend/seed_test_accounts.py`](../backend/seed_test_accounts.py) — creates admin/org_admin/analyst/client (see [Setup](#setup)). |
 | **How do I deploy?** | [DEPLOYMENT.md](DEPLOYMENT.md). |
@@ -387,7 +393,7 @@ density, structure) rather than introducing a new style.
 
 ## Database migrations
 
-Application-DB schema changes go through **Alembic** (`backend/migrations/`). Add
+Application-DB schema changes go through **Alembic** (`backend/migrations/`, `0001`–`0018`). Add
 a migration for any model change; the app runs `alembic upgrade head` on startup.
 
 ## Change Hygiene

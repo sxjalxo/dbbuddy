@@ -35,6 +35,16 @@ async def lifespan(_app: FastAPI):
     from app_db.database import init_db
 
     init_db()
+
+    # Subscribe to cross-worker session revocations. Without this a worker still
+    # publishes its own logouts but never hears anyone else's, so it would keep
+    # serving a revoked session until its cache TTL expired — the gap this exists
+    # to close. A no-op when there is no Redis, which is the documented degraded
+    # behaviour rather than a failure.
+    from app_db.deps import start_revocation_listener
+
+    start_revocation_listener()
+
     scheduler = None
     if os.getenv("DBBUDDY_DISABLE_SCHEDULER") != "1":
         from app_db.jobs import scheduler as _scheduler
@@ -140,6 +150,9 @@ async def _too_deeply_nested_handler(request, _exc):
 # ── Application database (platform state: users, roles, charts, history, …) ────
 # Separate from customer ERP databases. Created/seeded on startup (see lifespan).
 from app_db.deps import get_token_payload, require_token_permission  # noqa: E402
+from app_db.rate_limit import (  # noqa: E402
+    ANALYZE_BUDGET, QUERY_BUDGET, rate_limit,
+)
 from app_db.routers import admin as admin_router  # noqa: E402
 from app_db.routers import ai_providers as ai_providers_router  # noqa: E402
 from app_db.routers import audit as audit_router  # noqa: E402
@@ -418,7 +431,10 @@ def health_check():
     return {"status": "ok"}
 
 
-@app.post("/analyze")
+# A full schema walk — the most expensive thing an authenticated caller can
+# ask for, and previously unmetered. Fails open: no shared window means the
+# analyze still runs, because a cache outage must not become a service outage.
+@app.post("/analyze", dependencies=[Depends(rate_limit("analyze", ANALYZE_BUDGET))])
 def analyze(req: AnalyzeRequest, payload: dict = Depends(require_token_permission("schema:analyze"))):
     try:
         host, user, password, database, engine, port = _resolve_connection(req, payload)
@@ -439,7 +455,7 @@ def analyze(req: AnalyzeRequest, payload: dict = Depends(require_token_permissio
         raise _internal_error(exc, context="/analyze") from exc
 
 
-@app.post("/query")
+@app.post("/query", dependencies=[Depends(rate_limit("query", QUERY_BUDGET))])
 def query(req: QueryRequest, payload: dict = Depends(require_token_permission("query:run"))):
     try:
         host, user, password, database, engine, port = _resolve_connection(req, payload)

@@ -57,6 +57,13 @@ WINDOW_SECONDS = 900  # 15 minutes
 # automated account-creation loops.
 MAX_REGISTRATIONS = 10
 
+# Password-reset requests, counted per (ip, address) like registration counts every
+# attempt rather than only failures. This endpoint sends mail on someone else's
+# behalf, so an unthrottled one is a way to flood a third party's inbox using this
+# server's reputation — and a way to burn an SMTP quota. Lower than registration
+# because a person legitimately asks for a reset once, maybe twice.
+MAX_RESET_REQUESTS = 5
+
 # How many worker processes serve this deployment. Only consulted while the
 # shared backend is unavailable, to shrink each worker's local cap so the
 # processes together stay near the configured global limit. Default 1 leaves

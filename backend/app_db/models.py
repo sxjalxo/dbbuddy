@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     Boolean, DateTime, ForeignKey, Integer, JSON, String, Table, Column, Text, UniqueConstraint,
+    false as sa_false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -87,6 +88,23 @@ class User(Base):
     mfa_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
     mfa_recovery_codes: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
+    # ── Email verification ────────────────────────────────────────────────────
+    # Whether the address has been proven reachable. Only *enforced* when
+    # REQUIRE_EMAIL_VERIFICATION is on; the column is maintained either way so a
+    # deployment can turn enforcement on later without a backfill of its own.
+    #
+    # Defaults to false for new rows, but migration 0017 backfills every existing
+    # row as verified — those accounts were created under the old rules, and
+    # locking them out on upgrade is an outage rather than a hardening.
+    email_verified: Mapped[bool] = mapped_column(
+        # sa.false() renders per dialect; a literal "0" is a boolean on SQLite and
+        # a type error on PostgreSQL.
+        Boolean, default=False, server_default=sa_false(), nullable=False
+    )
+    email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # ── Refresh-token revocation (stateless, one integer) ─────────────────────
     # Every refresh token carries the ``token_version`` it was minted with; a
     # refresh is honored only while the two still match. Bumping this (logout,
@@ -109,6 +127,53 @@ class User(Base):
 
     def role_names(self) -> list[str]:
         return sorted(r.name for r in self.roles)
+
+
+class EmailVerificationToken(Base):
+    """Proof that whoever registered can read the address they claimed.
+
+    Same shape and same rules as ``PasswordResetToken`` — hashed at rest, single
+    use, short lived — because it is the same kind of object: a bearer credential
+    mailed to an address, redeemable once.
+
+    Kept as its own table rather than a ``purpose`` column on one shared table.
+    The two have different lifetimes and different consequences, and a single
+    token store invites a bug where a verification link is redeemed as a password
+    reset.
+    """
+    __tablename__ = "email_verification_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class PasswordResetToken(Base):
+    """A single-use, short-lived permission to set a new password.
+
+    Only the SHA-256 hash of the token is stored — the raw value exists in the
+    email and nowhere else, matching the API-key and recovery-code convention
+    (the token is high-entropy, so a fast hash is sufficient).
+
+    Rows are kept after use rather than deleted: ``used_at`` is what makes a
+    second attempt fail, and an audit trail of resets is worth more than the
+    handful of bytes. ``token_version`` is bumped on the user at the same time,
+    which is what actually ends their existing sessions.
+    """
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # Recorded for the audit trail: a reset request is a security event, and
+    # "where from" is the first question asked about a suspicious one.
+    requested_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class ApiKey(Base):
@@ -278,6 +343,10 @@ class AuditLog(Base):
     # whole flow (login → query → publish → client run) can be traced as a unit.
     request_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+    # HMAC over this row's content, keyed by the server secret — see
+    # app_db/audit_integrity.py. Nullable because rows written before signing
+    # existed have none; the verifier reports those rather than passing them.
+    entry_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 # ── Background jobs (Milestone 6) ─────────────────────────────────────────────

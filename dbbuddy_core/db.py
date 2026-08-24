@@ -23,7 +23,7 @@ class DatabaseUnavailableError(RuntimeError):
     """
 
 
-def connect_db(host: str, user: str, password: str, database: str, engine: str = "mysql", port: int | None = None) -> DialectConnection | None:
+def connect_db(host: str, user: str, password: str, database: str, engine: str = "mysql", port: int | None = None, db_schema: str | None = None) -> DialectConnection | None:
     """Open a DialectConnection for the given engine.
 
     Returns a DialectConnection on success, None on failure. Callers are
@@ -33,7 +33,8 @@ def connect_db(host: str, user: str, password: str, database: str, engine: str =
     """
     try:
         dialect = get_dialect(engine)
-        raw_conn = dialect.connect(host, user, password, database, port=port)
+        raw_conn = dialect.connect(host, user, password, database, port=port,
+                                   db_schema=db_schema)
         # Bound every statement on this connection. Without it a lock wait or a
         # scan of a huge table holds a worker and a pool slot until the database
         # decides to answer — the data path is the one users actually wait on and

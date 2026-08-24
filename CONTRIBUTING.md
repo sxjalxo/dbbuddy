@@ -162,6 +162,18 @@ normal development machine has.
 Conventional Commits — `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `perf:`, `chore:`.
 Explain *why* in the body; the diff already shows *what*.
 
+### Dependencies
+
+`requirements.txt` holds floors; `requirements.lock` is the compiled, pinned
+resolution of them. Change the first, then regenerate the second:
+
+```bash
+uv pip compile --universal --python-version 3.12 requirements.txt -o requirements.lock
+```
+
+`--universal` matters: without it the lock carries whichever platform you compiled
+on, and CI cannot install it.
+
 ### Code style
 
 - **Python:** ruff, 100-column lines. Type hints on public functions.

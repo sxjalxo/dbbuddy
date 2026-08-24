@@ -30,7 +30,7 @@ logger = get_logger()
 # before, and the older and more-used the question, the more likely it is to be
 # stale. This is easy to miss precisely because a fresh question proves the fix
 # works while the reported one keeps failing.
-PLAN_VERSION = "v14"  # v14: confidence penalises clauses the question asked for but the plan dropped
+PLAN_VERSION = "v15"  # v15: grain survives a learned mapping; label over key; head noun of a multi-word dimension
 
 
 def normalize_column_structure(columns: List[Any], base_table: str = None) -> List[Dict[str, Any]]:

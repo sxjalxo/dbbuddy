@@ -31,3 +31,13 @@ class DialectCapabilities:
 
     # Identifier quoting character (`` ` `` for MySQL, ``"`` for Postgres/ANSI)
     identifier_quote_char: str = '"'
+
+    # What the engine does to an *unquoted* identifier's case. PostgreSQL folds to
+    # lower, so a table introspected as ``CUSTOMER_LOG`` must be quoted or the
+    # reference silently becomes ``customer_log`` and the relation is not found.
+    # MySQL (default settings), SQLite and SQL Server preserve what is written, so
+    # they need no quoting on case alone — and quoting costs readability in output
+    # users copy into their own tools.
+    #
+    # ``None`` means "preserves case". The only other value in use is "lower".
+    unquoted_identifier_case: "str | None" = None

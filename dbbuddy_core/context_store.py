@@ -66,7 +66,8 @@ class _ConnectionPool:
 
     def _new(self):
         c = self._config
-        conn = db_module.connect_db(c.host, c.user, c.password, c.database, engine=c.engine, port=c.port)
+        conn = db_module.connect_db(c.host, c.user, c.password, c.database, engine=c.engine,
+                                    port=c.port, db_schema=getattr(c, "db_schema", None))
         if conn is None:
             raise db_module.DatabaseUnavailableError("Unable to connect to the database.")
         try:

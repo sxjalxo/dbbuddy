@@ -75,7 +75,13 @@ Set these in the backend's environment (e.g. a systemd unit, container env, or a
 | `DBBUDDY_ENV` | Recommended | `development` (default), `production`, or `test`. In **`production`** the backend **fails to start** unless `JWT_SECRET`, `APP_SECRET_KEY`, a non-SQLite `APP_DATABASE_URL`, and `ALLOWED_ORIGINS` are all explicitly set. An unrecognized value (e.g. a `prod` typo) is itself a startup error. |
 | `APP_DATABASE_URL` | **Yes (prod)** | App DB URL. Prod: `postgresql+psycopg2://user:pass@host:5432/dbbuddy_app`. Dev default: a local SQLite file. |
 | `JWT_SECRET` | **Yes** | Signs JWTs. Must be **≥ 32 bytes** — a shorter value makes the process **fail to start**. If unset, a throwaway per-process secret is generated (tokens die on restart) — dev only. |
-| `APP_SECRET_KEY` | **Yes** | Derives the Fernet key that encrypts ERP passwords + MFA secrets at rest. Keep stable and secret; rotating it invalidates stored secrets. |
+| `APP_SECRET_KEY` | **Yes** | Derives the Fernet key that encrypts ERP passwords + MFA secrets at rest, and (through a separate label) the audit-log signing key. Keep stable and secret. Rotating it is now a supported procedure — see `APP_SECRET_KEYS_PREVIOUS`. |
+| `APP_SECRET_KEYS_PREVIOUS` | No | Comma-separated retired keys, newest first. Everything is encrypted with `APP_SECRET_KEY` and decrypted with whichever of these fits, which is what makes rotation safe. Full procedure in [SECURITY.md](SECURITY.md#rotating-the-at-rest-encryption-key). |
+| `REQUIRE_EMAIL_VERIFICATION` | No | Off by default. When on, an account can be created but cannot sign in until its address is confirmed. Accounts predating the feature are grandfathered by migration `0017`. |
+| `EMAIL_VERIFICATION_TTL_HOURS` | No | Default 48. |
+| `PASSWORD_RESET_TTL_MINUTES` | No | Default 30. |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_STARTTLS` / `EMAIL_FROM` | No | Where password-reset and verification mail is sent. With `SMTP_HOST` unset the message is **logged instead of sent**, so a fresh install does not appear broken. |
+| `APP_BASE_URL` | No | Where the frontend lives; reset and verification links are built from it. Defaults to the dev frontend. |
 | `ALLOWED_ORIGINS` | **Yes (prod)** | Comma-separated allow-list of browser origins permitted to call the API with credentials, e.g. `https://dbbuddy.example.org,https://analytics.example.org`. **Never `*`.** Defaults to the local dev frontend (`http://localhost:5173,http://127.0.0.1:5173`). |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | Recommended | If both set and no such user exists, a **platform admin** is provisioned on startup. The only non-interactive way to get the first admin. |
 | `REGISTRATION_ALLOWED_DOMAINS` | No | Comma-separated email-domain allow-list for self-registration (`/auth/register`), e.g. `example.org,corp.example.org`. Empty (default) leaves registration open; set it to confine new self-service accounts to trusted domains. Registration is also IP-rate-limited regardless. |
@@ -282,7 +288,10 @@ Reports viewer).
 ## 10. Production security checklist
 
 - [ ] Set `DBBUDDY_ENV=production` — this turns the checks below into hard startup errors (fail-fast) instead of dev-only warnings.
-- [ ] `JWT_SECRET` (≥ 32 bytes) and `APP_SECRET_KEY` set to strong, **stable** secrets (store in a secrets manager). A short `JWT_SECRET` now aborts startup.
+- [ ] `JWT_SECRET` (≥ 32 bytes) and `APP_SECRET_KEY` set to strong secrets (store in a secrets manager). A short `JWT_SECRET` now aborts startup. `APP_SECRET_KEY` no longer has to be permanent — see the rotation procedure — but changing it without following that procedure still destroys every stored secret.
+- [ ] Redis reachable if running more than one worker: session revocation is broadcast over it, and without it each worker converges on its own `AUTH_REVOCATION_CACHE_TTL` instead.
+- [ ] `python scripts/verify_audit_log.py` scheduled, so audit tampering is noticed rather than discovered.
+- [ ] Decide on `REQUIRE_EMAIL_VERIFICATION` and configure `SMTP_HOST`, or password reset mail is only written to the log.
 - [ ] `APP_DATABASE_URL` points to **PostgreSQL**, not SQLite.
 - [ ] Serve everything over **HTTPS**; terminate TLS at the proxy.
 - [ ] **Set `ALLOWED_ORIGINS`** to your frontend domain(s) — CORS is an explicit
@@ -328,7 +337,7 @@ and the real-execution tests run only when `DBBUDDY_LIVE_DB_TESTS=1` is set. See
 | ---- | ---- |
 | `backend/main.py` | FastAPI app, query endpoints, middleware, router wiring |
 | `backend/app_db/` | Platform: models, auth, RBAC, routers, jobs, security |
-| `backend/migrations/` | Alembic migrations (`0001`–`0015`) + README |
+| `backend/migrations/` | Alembic migrations (`0001`–`0018`) + README |
 | `backend/seed_test_accounts.py` | Reproducible demo-account seeding |
 | `dbbuddy_core/` | The NL→SQL engine (deterministic pipeline) + AI labeling |
 | `dbbuddy_core/insights/` | Insights Engine: context builder, prompts, validators, formatter, service |

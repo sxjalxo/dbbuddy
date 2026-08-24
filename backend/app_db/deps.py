@@ -1,7 +1,10 @@
 """Auth dependencies — resolve the current user from a JWT and gate by permission."""
 
+import logging
+from datetime import datetime, timezone
 import os
 import threading
+import uuid
 import time
 from collections import OrderedDict
 
@@ -12,6 +15,8 @@ from sqlalchemy.orm import Session
 from .database import get_db
 from .models import AuditLog, User
 from .security import decode_token
+
+logger = logging.getLogger(__name__)
 
 # ── Access-token revocation (see security.create_access_token) ────────────────
 # The claims-only path exists to keep /query, /execute and /analyze off the app DB
@@ -150,13 +155,145 @@ def reset_revocation_cache() -> None:
         _rev_gen.clear()
 
 
+# ── Cross-worker invalidation ─────────────────────────────────────────────────
+# Dropping the local entry only fixes the process that did the revoking. With N
+# workers the other N−1 kept serving the old (token_version, is_active) until
+# their own TTL expired — so a logout or a deactivation stayed partly effective
+# for up to REVOCATION_CACHE_TTL on the endpoints that authorize from JWT claims
+# alone (/query, /execute, /analyze), which are the ones that reach customer data.
+#
+# The two obvious alternatives both cost more than they save: reading the shared
+# store per request replaces one DB read per window with one Redis read per
+# *request* — the exact property this cache exists to protect — and shortening the
+# TTL narrows the window without closing it, paying in database load.
+#
+# So the revoking process publishes the user id and every worker drops its own
+# entry on receipt. No per-request cost, and convergence in a fan-out.
+#
+# Without Redis this degrades to the previous behaviour — immediate locally,
+# bounded by the TTL elsewhere — not to something worse. Same rule login_guard
+# follows: a control protecting authentication may weaken when its dependency is
+# gone, but it must not vanish, and must not take the service down with it.
+REVOCATION_CHANNEL = "dbbuddy:revocation"
+
+_listener_started = False
+_listener_lock = threading.Lock()
+
+
+def _revocation_channel():
+    """The Redis client to publish/subscribe on, or None when unavailable."""
+    try:
+        from dbbuddy_core.context_store import _get_cache
+
+        cache = _get_cache()
+        if cache is None or getattr(cache, "client", None) is None:
+            return None
+        return cache.client
+    except Exception:  # noqa: BLE001 — no shared store is a supported state
+        return None
+
+
+def _publish_invalidation(user_id: str) -> None:
+    client = _revocation_channel()
+    if client is None:
+        return
+    client.publish(REVOCATION_CHANNEL, user_id)
+
+
+def _apply_remote_invalidation(user_id) -> None:
+    """Drop one user's entry because another worker revoked them.
+
+    Tolerant of anything arriving on the channel: a pub/sub topic is not a trusted
+    schema, and a malformed message must not take down the listener thread that
+    every other revocation depends on.
+    """
+    if not isinstance(user_id, str) or not user_id:
+        return
+    with _rev_lock:
+        _rev_cache.pop(user_id, None)
+        # The receiving worker has in-flight readers too — same reason the local
+        # path bumps this.
+        _rev_gen[user_id] = _rev_gen.get(user_id, 0) + 1
+
+
+def _listen_for_invalidations(pubsub) -> None:
+    """Poll the channel forever, surviving idle timeouts and reconnects.
+
+    Deliberately ``get_message(timeout=...)`` rather than the more natural
+    ``for message in pubsub.listen()``. The shared client carries a short
+    ``socket_timeout`` — correct for request-path commands, where a hung Redis
+    must not stall a query — but a subscriber is *supposed* to sit idle between
+    messages, so a blocking listen raises ``TimeoutError`` within a second and
+    kills the thread. The feature then looks fine and silently stops working,
+    which is worse than never having shipped it.
+
+    So an idle timeout is an expected outcome here, not an error, and anything
+    else is logged and retried rather than allowed to end the loop: this thread is
+    the only thing keeping every other worker's revocations honest.
+    """
+    while True:
+        try:
+            message = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+        except TimeoutError:
+            continue                      # idle: the normal case
+        except Exception:  # noqa: BLE001 — connection reset, Redis restart, …
+            logger.debug("revocation listener hiccuped; retrying", exc_info=True)
+            time.sleep(1.0)
+            continue
+
+        if not message:
+            continue
+        try:
+            data = message.get("data")
+            if isinstance(data, bytes):
+                data = data.decode("utf-8", "replace")
+            _apply_remote_invalidation(data)
+        except Exception:  # noqa: BLE001 — one bad message must not end the loop
+            logger.debug("revocation listener ignored a bad message", exc_info=True)
+
+
+def start_revocation_listener() -> bool:
+    """Subscribe this worker to revocations. Returns whether it is listening.
+
+    Called once at startup. Idempotent, and a no-op without Redis — in which case
+    the TTL remains the convergence bound, as it was before.
+    """
+    global _listener_started
+    with _listener_lock:
+        if _listener_started:
+            return True
+        client = _revocation_channel()
+        if client is None:
+            return False
+        try:
+            pubsub = client.pubsub(ignore_subscribe_messages=True)
+            pubsub.subscribe(REVOCATION_CHANNEL)
+        except Exception:  # noqa: BLE001
+            logger.warning("could not subscribe to revocation broadcasts; sessions "
+                           "will converge within AUTH_REVOCATION_CACHE_TTL instead",
+                           exc_info=True)
+            return False
+
+        thread = threading.Thread(
+            target=_listen_for_invalidations, args=(pubsub,),
+            name="revocation-listener", daemon=True,
+        )
+        thread.start()
+        _listener_started = True
+        logger.info("listening for cross-worker session revocations")
+        return True
+
+
 def invalidate_revocation(user_id: str | None) -> None:
     """Force the next request for ``user_id`` to re-read the account.
 
     Called wherever ``token_version`` is bumped, so a logout / deactivation /
     forced-reset takes effect on the very next request in **this** process rather
-    than at the end of the cache window. Other worker processes converge within
-    ``REVOCATION_CACHE_TTL`` — see the module note above.
+    than at the end of the cache window.
+
+    Other workers are told directly (see ``_publish_invalidation``) and drop their
+    own entry on receipt. Only when there is no shared store do they fall back to
+    converging within ``REVOCATION_CACHE_TTL``.
 
     Bumping the generation is what makes this safe against a concurrent reader:
     dropping the entry alone would let a read already in flight write the
@@ -167,6 +304,15 @@ def invalidate_revocation(user_id: str | None) -> None:
     with _rev_lock:
         _rev_cache.pop(user_id, None)
         _rev_gen[user_id] = _rev_gen.get(user_id, 0) + 1
+
+    # After the local drop, and never at its expense: a broadcast that fails must
+    # not undo the revocation in the process that actually performed it.
+    try:
+        _publish_invalidation(user_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("could not broadcast a session revocation; other workers "
+                       "will converge within AUTH_REVOCATION_CACHE_TTL",
+                       exc_info=True)
 
 
 def revocation_cache_stats() -> dict:
@@ -272,8 +418,19 @@ def write_audit(db: Session, *, user_id: str | None, action: str,
     """
     from .request_context import get_request_id
 
-    db.add(AuditLog(
+    from .audit_integrity import sign
+
+    entry = AuditLog(
         user_id=user_id, organization_id=organization_id, action=action,
         entity_type=entity_type, entity_id=entity_id, detail=detail, ip_address=ip_address,
         request_id=get_request_id(),
-    ))
+    )
+    # Defaults are applied by the ORM/DB, not by the constructor, so id and
+    # created_at are still None here — and both are signed. Fill them in first,
+    # or every row would be signed over a different value than it stores.
+    if entry.id is None:
+        entry.id = str(uuid.uuid4())
+    if entry.created_at is None:
+        entry.created_at = datetime.now(timezone.utc)
+    entry.entry_hash = sign(entry)
+    db.add(entry)

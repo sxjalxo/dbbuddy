@@ -32,6 +32,8 @@ from dataclasses import dataclass
 
 import requests
 
+from dbbuddy_core import safe_http
+
 from dbbuddy_core import ai_metrics
 
 # Reuse the existing, well-tested labeling helpers rather than duplicating them.
@@ -224,10 +226,21 @@ class OpenAICompatibleProvider(AIProvider):
 
         response = None
         try:
-            response = requests.post(
+            # safe_http, not requests: it resolves the host once, validates
+            # every address that lookup returned, and dials that address — so the
+            # socket cannot open somewhere other than what was approved. See
+            # dbbuddy_core/net_guard.py.
+            response = safe_http.post(
                 f"{cfg.base_url.rstrip('/')}/chat/completions",
                 headers=headers, json=body, timeout=cfg.timeout,
             )
+        except ValueError as exc:
+            # A blocked destination is a refusal, not a transient failure — it
+            # must not be retried against, and must not read as the provider
+            # being briefly unavailable.
+            raise RecoverableProviderError(
+                f"{cfg.name or 'OpenAI-compatible'} endpoint refused: {exc}"
+            ) from exc
         except requests.RequestException as exc:
             # Timeout / connection reset — transient, worth a retry.
             raise TransientProviderError(
@@ -272,7 +285,7 @@ class OllamaProvider(AIProvider):
         url = (cfg.base_url or OLLAMA_URL).rstrip("/")
         want_json = self.capabilities.supports_json_mode if json_mode is None else json_mode
         try:
-            response = requests.post(
+            response = safe_http.post(
                 f"{url}/api/generate",
                 json={
                     "model": cfg.model,
@@ -295,6 +308,12 @@ class OllamaProvider(AIProvider):
                 timeout=cfg.timeout or OLLAMA_TIMEOUT,
                 proxies=_OLLAMA_NO_PROXY,
             )
+        except ValueError as exc:
+            # A blocked destination is a refusal, not a transient failure: it must
+            # not be retried against.
+            raise RecoverableProviderError(
+                f"{cfg.name or 'Ollama'} endpoint refused: {exc}"
+            ) from exc
         except requests.RequestException as exc:
             # Cold model load / connection blip — transient, worth a retry.
             raise TransientProviderError(

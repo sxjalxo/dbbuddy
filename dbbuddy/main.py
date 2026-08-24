@@ -268,6 +268,7 @@ def build_config(args) -> DBConfig:
     return DBConfig(
         host=host, user=user, password=password, database=database,
         port=int(port) if port else None,
+        db_schema=getattr(args, "schema", None) or file_cfg.get("schema") or None,
         engine=engine,
         ai=ai,
         ai_provider=provider,
@@ -826,6 +827,10 @@ def _build_parser() -> argparse.ArgumentParser:
     conn.add_argument("--user", help="ERP user.")
     conn.add_argument("--password", help="ERP password (prompts if omitted).")
     conn.add_argument("--database", help="ERP database name.")
+    conn.add_argument("--schema",
+                      help="Namespace within the database, for engines that have one. "
+                           "PostgreSQL tables outside 'public' are invisible without it; "
+                           "MySQL has no such level and ignores it.")
     conn.add_argument("--engine", help=f"ERP engine: {', '.join(SUPPORTED_ENGINES)} (default: mysql).")
     conn.add_argument("--config", help="Path to a JSON connection config (--local).")
     conn.add_argument("--ai", action=argparse.BooleanOptionalAction, default=None,
