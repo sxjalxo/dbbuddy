@@ -1,0 +1,7 @@
+{
+  "description": "ERPNext/Frappe: string PK literally named 'name', human label in *_name; tab-prefixed tables.",
+  "tables": {
+    "tabCustomer": {"name": "varchar(140)", "customer_name": "varchar(140)", "customer_group": "varchar(140)", "territory": "varchar(140)"},
+    "tabSalesInvoice": {"name": "varchar(140)", "customer": "varchar(140)", "posting_date": "date", "grand_total": "decimal(18,6)", "status": "varchar(30)"}
+  }
+}

@@ -1,0 +1,234 @@
+{
+  "cache": {
+    "dead_redis_call_mean": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 0.309
+    },
+    "dead_redis_call_p95": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 0.0
+    },
+    "dead_redis_client_calls": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "calls",
+      "value": 3.0
+    },
+    "dead_redis_ungated_equivalent": {
+      "kind": "diagnostic",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 20.0
+    },
+    "healthy_get_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 0.012
+    },
+    "healthy_set_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 0.015
+    }
+  },
+  "embeddings": {
+    "cached_search_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 0.0
+    },
+    "index_schema": {
+      "kind": "trend",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 6962.361
+    },
+    "uncached_search_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 21.51
+    },
+    "uncached_search_p95": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 23.355
+    }
+  },
+  "pipeline": {
+    "cold_query": {
+      "kind": "trend",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 3152.234
+    },
+    "stage_cache_check_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 0.0
+    },
+    "stage_compilation_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 0.02
+    },
+    "stage_context_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 6.385
+    },
+    "stage_execution_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 0.88
+    },
+    "stage_intent_building_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 2.08
+    },
+    "stage_planning_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 0.13
+    },
+    "stage_relevance_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 0.02
+    },
+    "throughput": {
+      "kind": "gate",
+      "lower_is_better": false,
+      "unit": "q/s",
+      "value": 84.972
+    },
+    "warm_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 10.78
+    },
+    "warm_p95": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 13.46
+    }
+  },
+  "pipeline_concurrent": {
+    "cold_query": {
+      "kind": "trend",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 69.494
+    },
+    "stage_cache_check_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 0.0
+    },
+    "stage_compilation_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 0.02
+    },
+    "stage_context_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 10.375
+    },
+    "stage_execution_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 10.02
+    },
+    "stage_intent_building_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 1.97
+    },
+    "stage_planning_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 0.12
+    },
+    "stage_relevance_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 0.01
+    },
+    "throughput": {
+      "kind": "gate",
+      "lower_is_better": false,
+      "unit": "q/s",
+      "value": 136.981
+    },
+    "warm_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 47.415
+    },
+    "warm_p95": {
+      "kind": "trend",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 192.05
+    }
+  },
+  "schema_resolution": {
+    "concurrent_resolve_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 6.711
+    },
+    "concurrent_resolve_p95": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 7.379
+    },
+    "fetches_per_resolve": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "x",
+      "value": 0.125
+    },
+    "schema_hash_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 0.115
+    },
+    "serial_resolve_p50": {
+      "kind": "gate",
+      "lower_is_better": true,
+      "unit": "ms",
+      "value": 6.186
+    }
+  }
+}

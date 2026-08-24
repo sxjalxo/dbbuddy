@@ -1,0 +1,50 @@
+"""Default mapping plugin with hardcoded semantic rules"""
+from dbbuddy_core.plugins.base import MappingPlugin
+from dbbuddy_core.ai import _normalize
+
+
+class Plugin(MappingPlugin):
+    """Default mapping plugin using hardcoded semantic rules"""
+
+    MAP = {
+        "amt": "value", "amount": "value", "price": "value",
+        "cost": "value", "total": "value", "revenue": "value",
+        "qty": "quantity", "quantity": "quantity", "count": "quantity",
+        "num": "quantity", "number": "quantity",
+        "name": "name", "title": "name", "label": "name",
+        "date": "date", "time": "date", "created_at": "date",
+        "updated_at": "date", "timestamp": "date",
+        "id": "identifier", "uuid": "identifier", "key": "identifier",
+        "status": "status", "state": "status", "flag": "status",
+        "desc": "description", "description": "description",
+        "note": "description", "comment": "description",
+    }
+
+    def classify(self, column_name: str) -> str:
+        """
+        Classify a column name using hardcoded semantic rules.
+
+        Args:
+            column_name: The name of the column to classify
+
+        Returns:
+            A semantic term (value, quantity, name, date, identifier, status, description, unknown)
+        """
+        col = column_name.lower()
+
+        # Exact match
+        if col in self.MAP:
+            return self.MAP[col]
+
+        # Substring match (longest keyword wins)
+        matches = [(key, self.MAP[key]) for key in sorted(self.MAP, key=len, reverse=True) if key in col]
+        if matches:
+            return matches[0][1]
+
+        # Fallback: a readable form of the column name itself. `_normalize` strips
+        # separators, so a name made only of them ("_", "__") normalizes to the
+        # empty string — and an empty `term` in the semantic layer is worse than a
+        # useless one: it renders as a blank label and matches nothing. Keep the
+        # raw name in that case; a column genuinely called "_" is best described
+        # as "_".
+        return _normalize(column_name) or column_name.strip() or column_name

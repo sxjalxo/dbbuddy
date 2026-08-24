@@ -1,0 +1,569 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ring-offset-background: var(--background);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --font-display: "Inter Tight", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter Tight", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+:root {
+  --radius: 0.75rem;
+  /* Dark-first palette per brand spec */
+  --background: oklch(0 0 0); /* #000000 */
+  --foreground: oklch(1 0 0); /* #ffffff */
+  --card: oklch(0.16 0 0); /* #0c0c0c */
+  --card-foreground: oklch(1 0 0);
+  --popover: oklch(0.16 0 0);
+  --popover-foreground: oklch(1 0 0);
+  --primary: oklch(0.92 0.03 240); /* #cee7ff */
+  --primary-foreground: oklch(0 0 0); /* #000000 */
+  --secondary: oklch(0 0 0); /* #000000 */
+  --secondary-foreground: oklch(1 0 0); /* #ffffff */
+  --muted: oklch(0.16 0 0);
+  --muted-foreground: oklch(0.7 0 0);
+  --accent: oklch(0.45 0 0); /* #535353 */
+  --accent-foreground: oklch(1 0 0);
+  --destructive: oklch(0.65 0.23 25);
+  --destructive-foreground: oklch(1 0 0);
+  --success: oklch(0.72 0.17 155);
+  --success-foreground: oklch(0 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 10%);
+  --ring: oklch(0.92 0.03 240);
+  --chart-1: oklch(0.92 0.03 240);
+  --chart-2: oklch(0.7 0.18 200);
+  --chart-3: oklch(0.72 0.17 155);
+  --chart-4: oklch(0.75 0.18 70);
+  --chart-5: oklch(0.65 0.23 25);
+  --sidebar: oklch(0.16 0 0);
+  --sidebar-foreground: oklch(1 0 0);
+  --sidebar-primary: oklch(0.92 0.03 240);
+  --sidebar-primary-foreground: oklch(0 0 0);
+  --sidebar-accent: oklch(0.22 0 0);
+  --sidebar-accent-foreground: oklch(1 0 0);
+  --sidebar-border: oklch(1 0 0 / 8%);
+  --sidebar-ring: oklch(0.92 0.03 240);
+
+  --gradient-brand: linear-gradient(135deg, oklch(0.92 0.03 240), oklch(0.85 0.05 240));
+  --gradient-glow: radial-gradient(circle at 30% 20%, oklch(0.92 0.03 240 / 0.18), transparent 60%);
+  --shadow-glow: 0 10px 40px -10px oklch(0.92 0.03 240 / 0.35);
+  --shadow-soft: 0 8px 30px -12px oklch(0 0 0 / 0.6);
+}
+
+.light {
+  --background: oklch(0.99 0.003 270);
+  --foreground: oklch(0.18 0.02 270);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.18 0.02 270);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.18 0.02 270);
+  --primary: oklch(0.55 0.22 275);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.96 0.01 270);
+  --secondary-foreground: oklch(0.2 0.02 270);
+  --muted: oklch(0.96 0.01 270);
+  --muted-foreground: oklch(0.5 0.02 270);
+  --accent: oklch(0.55 0.22 295);
+  --accent-foreground: oklch(0.99 0 0);
+  --destructive: oklch(0.58 0.24 25);
+  --destructive-foreground: oklch(0.99 0 0);
+  --success: oklch(0.6 0.17 155);
+  --success-foreground: oklch(0.99 0 0);
+  --border: oklch(0.92 0.01 270);
+  --input: oklch(0.92 0.01 270);
+  --ring: oklch(0.55 0.22 275);
+  --sidebar: oklch(0.98 0.005 270);
+  --sidebar-foreground: oklch(0.18 0.02 270);
+  --sidebar-primary: oklch(0.55 0.22 275);
+  --sidebar-primary-foreground: oklch(0.99 0 0);
+  --sidebar-accent: oklch(0.95 0.01 270);
+  --sidebar-accent-foreground: oklch(0.2 0.02 270);
+  --sidebar-border: oklch(0.92 0.01 270);
+  --sidebar-ring: oklch(0.55 0.22 275);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html,
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background: oklch(0.92 0.03 240 / 0.35);
+    color: oklch(0 0 0);
+  }
+}
+
+@utility brand-gradient {
+  background-image: var(--gradient-brand);
+}
+
+@utility text-brand-gradient {
+  background-image: var(--gradient-brand);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+@utility glow {
+  box-shadow: var(--shadow-glow);
+}
+
+/* ── Animation keyframes ─────────────────────────────────── */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeDown {
+  from {
+    opacity: 0;
+    transform: translateY(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeLeft {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes fadeRight {
+  from {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% center;
+  }
+  100% {
+    background-position: 200% center;
+  }
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes pulseGlow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 oklch(0.92 0.03 240 / 0);
+  }
+  50% {
+    box-shadow: 0 0 24px 6px oklch(0.92 0.03 240 / 0.25);
+  }
+}
+
+@keyframes borderPulse {
+  0%,
+  100% {
+    border-color: oklch(1 0 0 / 0.1);
+  }
+  50% {
+    border-color: oklch(0.92 0.03 240 / 0.45);
+  }
+}
+
+@keyframes countUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideInChip {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes gradientShift {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes spinSlow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Animation utility classes ───────────────────────────── */
+@utility animate-fade-up {
+  animation: fadeUp 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@utility animate-fade-down {
+  animation: fadeDown 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@utility animate-fade-left {
+  animation: fadeLeft 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@utility animate-fade-right {
+  animation: fadeRight 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@utility animate-scale-in {
+  animation: scaleIn 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@utility animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+
+@utility animate-pulse-glow {
+  animation: pulseGlow 3s ease-in-out infinite;
+}
+
+@utility animate-border-pulse {
+  animation: borderPulse 2.5s ease-in-out infinite;
+}
+
+@utility animate-shimmer {
+  background: linear-gradient(
+    90deg,
+    oklch(1 0 0 / 0) 0%,
+    oklch(1 0 0 / 0.06) 40%,
+    oklch(0.92 0.03 240 / 0.12) 50%,
+    oklch(1 0 0 / 0.06) 60%,
+    oklch(1 0 0 / 0) 100%
+  );
+  background-size: 200% auto;
+  animation: shimmer 2.4s linear infinite;
+}
+
+@utility animate-fade-in {
+  animation: fadeIn 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@utility animate-count-up {
+  animation: countUp 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@utility animate-slide-in-chip {
+  animation: slideInChip 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@utility animate-spin-slow {
+  animation: spinSlow 8s linear infinite;
+}
+
+/* ── Delay helpers ───────────────────────────────────────── */
+@utility delay-100 {
+  animation-delay: 100ms;
+}
+@utility delay-150 {
+  animation-delay: 150ms;
+}
+@utility delay-200 {
+  animation-delay: 200ms;
+}
+@utility delay-300 {
+  animation-delay: 300ms;
+}
+@utility delay-400 {
+  animation-delay: 400ms;
+}
+@utility delay-500 {
+  animation-delay: 500ms;
+}
+@utility delay-600 {
+  animation-delay: 600ms;
+}
+@utility delay-700 {
+  animation-delay: 700ms;
+}
+@utility delay-800 {
+  animation-delay: 800ms;
+}
+@utility delay-900 {
+  animation-delay: 900ms;
+}
+@utility delay-1000 {
+  animation-delay: 1000ms;
+}
+@utility delay-1100 {
+  animation-delay: 1100ms;
+}
+@utility delay-1200 {
+  animation-delay: 1200ms;
+}
+
+/* ── Premium interactive states ──────────────────────────── */
+@utility interactive {
+  transition:
+    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.18s ease;
+
+  &:hover {
+    transform: translateY(-1px);
+  }
+  &:active {
+    transform: translateY(0px) scale(0.98);
+  }
+}
+
+@utility interactive-lift {
+  transition:
+    transform 0.2s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+
+  &:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 12px 36px -8px oklch(0.92 0.03 240 / 0.3);
+  }
+  &:active {
+    transform: translateY(-1px) scale(0.99);
+  }
+}
+
+/* ── Gradient text animation ─────────────────────────────── */
+@utility text-gradient-animate {
+  background: linear-gradient(
+    90deg,
+    oklch(0.92 0.03 240),
+    oklch(0.82 0.06 220),
+    oklch(0.96 0.02 260),
+    oklch(0.92 0.03 240)
+  );
+  background-size: 300% auto;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: gradientShift 6s ease infinite;
+}
+
+/* Custom scrollbar */
+/* Standard properties (Firefox and other non-WebKit engines) so every
+   scrollbar — chat, Query Metadata, dropdowns — is themed consistently and
+   matches, instead of falling back to the chunky OS-default bar. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(1 0 0 / 0.12) transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: oklch(1 0 0 / 0.08);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(1 0 0 / 0.15);
+}
+
+/* ── Accessibility: honor reduced-motion ─────────────────────
+   Reduce motion, don't eliminate it. Users who prefer reduced motion still get
+   gentle opacity fades for visual context, while large positional/scale moves
+   and all continuous (looping) decorative motion are removed. This avoids both
+   the "everything moves" problem and the "everything snaps in instantly" one. */
+@media (prefers-reduced-motion: reduce) {
+  /* 1. Continuous / decorative loops — no float, shimmer, pulse, spin, gradient
+        drift, or parallax. */
+  .animate-float,
+  .animate-pulse-glow,
+  .animate-border-pulse,
+  .animate-shimmer,
+  .animate-spin-slow,
+  .text-gradient-animate {
+    animation: none !important;
+  }
+
+  /* 2. On-load entrance keyframes move via transform; swap them for a short
+        opacity-only fade so there's still an entrance, minus the movement. */
+  .animate-fade-up,
+  .animate-fade-down,
+  .animate-fade-left,
+  .animate-fade-right,
+  .animate-scale-in,
+  .animate-fade-in,
+  .animate-count-up,
+  .animate-slide-in-chip {
+    animation: rmFadeIn 150ms ease-out both !important;
+  }
+
+  /* 3. The scroll-reveal component: strip translate/scale so it fades in place,
+        and shorten the transition to a quick 150ms opacity fade. Scoped to
+        `.reveal` so app-wide transform-based positioning is untouched. */
+  .reveal {
+    transition-duration: 150ms !important;
+    translate: none !important;
+    scale: none !important;
+    rotate: none !important;
+  }
+
+  /* 4. Everything else: shorten remaining transitions/animations so hover and
+        state changes stay subtle rather than long or janky. We deliberately do
+        NOT force `transform: none` globally — Radix popovers, tooltips, selects,
+        and menus rely on transforms for positioning. */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 150ms !important;
+    transition-duration: 150ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* 5. Radix overlays (dialog, alert-dialog, popover, dropdown, tooltip, select,
+        …) drive mount/unmount off a CSS enter/exit animation via Radix `Presence`,
+        which unmounts the node on `animationend`. A reduced-motion environment may
+        run the animation without ever emitting `animationend`, so Presence hangs
+        mounted and the body scroll-lock + `pointer-events: none` it applied are
+        never released — freezing the page after a dialog closes. Removing the
+        animation entirely (not just shortening it, as rule 4 does) makes
+        `animationName` compute to `none`, so Presence unmounts synchronously. This
+        is also the desired reduced-motion result: overlays appear/dismiss without
+        a transition. Scoped to the open/closed state Radix animates. */
+  [data-state="open"],
+  [data-state="closed"] {
+    animation: none !important;
+  }
+}
+
+/* No-JS fallback: if scripting is unavailable the reveal observer never runs, so
+   make sure nothing stays stuck hidden. */
+@media (scripting: none) {
+  .reveal {
+    opacity: 1 !important;
+    translate: none !important;
+    scale: none !important;
+  }
+}
+
+@keyframes rmFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

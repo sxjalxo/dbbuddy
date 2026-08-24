@@ -1,0 +1,69 @@
+name: Feature request
+description: Propose a capability DB Buddy does not have yet
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A query shape the engine cannot express yet is a **missing capability**, not a bug.
+        Both are welcome here — describing it as a capability just gets it designed
+        properly instead of special-cased.
+
+        Describe the outcome you need, not the implementation you imagine.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to do
+      description: The question, workflow, or query shape you need — and what happens today.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like to happen
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Query understanding (new question shape)
+        - SQL generation (new clause, operator, join pattern)
+        - New database engine / dialect
+        - Web UI
+        - CLI
+        - AI providers / Insights
+        - Dashboards / charts / reports
+        - Auth / RBAC / admin
+        - Deployment / operations
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: generality
+    attributes:
+      label: How this generalizes
+      description: |
+        DB Buddy carries no hardcoded schema knowledge — no table names, column names, or
+        domain values. If this feature needs to know something about the data, where should
+        that knowledge come from at runtime (schema metadata, column roles, keys, the value
+        index)?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered or workarounds you use today
+
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be willing to work on this

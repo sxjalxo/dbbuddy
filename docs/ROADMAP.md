@@ -1,0 +1,239 @@
+# Roadmap
+
+Where DB Buddy is going and what is worth working on. Directional, not a commitment —
+dates are deliberately absent; sequence is not.
+
+**Want to help?** Anything marked **[help wanted]** is scoped, has no hidden design
+decision waiting inside it, and is a good first contribution. Open an issue before starting
+something large so we don't duplicate work. Read
+[CONTRIBUTING.md](../CONTRIBUTING.md) first — especially the non-negotiables.
+
+---
+
+## The through-line
+
+Every NL→SQL tool can demo. Almost none can tell you *why* it wrote the query it wrote, or
+behave the same way twice. DB Buddy's bet is that **determinism and explainability are the
+product**, and everything below is ordered by how much it protects or proves that bet.
+
+Three things follow from it:
+
+1. **Correctness is measured, not asserted.** A capability ships with a dogfood case that
+   holds on schemas nobody anticipated.
+2. **AI is never in the SQL path.** It labels schemas. If that boundary ever needs to move,
+   it is a design discussion, not a patch.
+3. **No hardcoded schema knowledge, ever.** A fix that works because it knows your column is
+   called `revenue` is a bug with good manners.
+
+---
+
+## Now — making it usable by someone who isn't us
+
+The gap between "good engine" and "project people can adopt" is packaging, and that is the
+whole of this milestone.
+
+### Getting started in five minutes
+- [x] **Docker Compose demo** — `docker compose up` gives a running backend, frontend, and a
+  seeded sample ERP database, with the demo account and connection already registered.
+- [ ] **SQLite as a first-class engine** — the test suite already runs on SQLite and the
+  dialect layer is already abstracted; promoting it means someone can try DB Buddy against a
+  local file with no server at all. **[help wanted]**
+- [ ] Screenshot / short demo recording in the README.
+
+### Continuous integration
+- [x] GitHub Actions: `ruff` → `pytest` → `vite build` on every push and PR.
+- [x] A second workflow running `pytest -m integration` against the docker-compose database
+  tier — nightly and on demand rather than per-PR, so a container hiccup never blocks a
+  contributor.
+- [ ] A job running the suite against **PostgreSQL**, not only SQLite — production is
+  Postgres, and a green SQLite run does not prove storage constraints hold.
+- [ ] Dependabot + `pip-audit` + `npm audit`.
+- [ ] A compiled lock file (`uv pip compile`) alongside the version floors, so a build is
+  reproducible.
+
+### Account lifecycle
+These are the reason a self-hoster currently gets stuck.
+
+- [ ] **Password reset** — request/confirm with a single-use hashed token. Bumps
+  `token_version`, which already revokes every outstanding session.
+- [ ] **Email verification** on registration.
+- [ ] A pluggable email sender (SMTP, plus console output in development) with no hard
+  dependency on any SaaS.
+- [ ] Revisit whether open self-registration is the right default for a hosted profile.
+
+### Security hardening
+- [ ] **Move the refresh token out of `localStorage`** into an httpOnly, `SameSite=Strict`
+  cookie, with the access token held in memory. Needs CSRF protection on the refresh route
+  as part of the same change.
+- [ ] **Key rotation for data at rest** — a `key_id` alongside every encrypted column,
+  `MultiFernet` with an ordered key list, and a re-encrypt script. Today, rotating
+  `APP_SECRET_KEY` orphans every stored connection credential with no recovery path.
+- [ ] **HTTP-layer rate limiting** beyond the login throttle — `/analyze` in particular is
+  expensive and currently unmetered. Keep the existing failure-mode split: the query limiter
+  fails open, anything protecting authentication degrades closed.
+- [ ] SSRF guard: resolve-then-pin the IP at connect time, closing the DNS-rebinding gap the
+  guard currently documents as out of scope.
+
+---
+
+## Next — reach and proof
+
+### MCP server
+Expose the engine as [Model Context Protocol](https://modelcontextprotocol.io) tools, so any
+MCP client gets deterministic, explainable database querying instead of a model guessing at
+SQL. The engine, the CLI, and the pipeline API already exist; this is an adapter over them.
+
+Read-only by default; writes behind an explicit opt-in.
+
+### Published benchmark
+"Deterministic, no hallucination" is a claim, and a claim without numbers is marketing.
+
+- [ ] Run against the Spider and BIRD development sets.
+- [ ] Compare against a raw-LLM baseline on the same schemas.
+- [ ] Publish methodology, a reproduction command, and **the failures** — the misses are what
+  make the numbers believable.
+
+### Confidence that tracks what was actually answered
+
+Scoring now penalises a clause the question asked for that the compiled plan does not
+contain. It does not yet cover the harder half: a clause the **intent builder never
+captured**. `total amount by region last quarter` still reports high confidence while
+returning a single global total, because its intent carries no grouping to lose.
+
+- [x] Record a requested grouping in the intent even when the target cannot be resolved
+  (`requests_grouping`), so the confidence check can see it. The phrase detection lives in
+  the intent builder — putting it in the scorer would mean two places parsing natural
+  language.
+- [ ] Treat "the query returned an execution error" as a confidence input, not just an
+  error field.
+- [ ] The remaining half is the planner, not the signal: a question with a grain phrase can
+  still compile without a `GROUP BY`. Confidence now reports that honestly (low), but the
+  SQL is still wrong.
+
+### Learning that cannot make the answer worse
+
+A learned mapping is applied by rewriting the query with the column reference it stands for.
+That reference then competes with the dimension for retrieval rank, and can displace it — so
+an instance that has learned `amount -> payments.amount` (a *correct* mapping) drops the
+`GROUP BY` from "total amount by region", while a cold instance answers it correctly.
+
+`DBBUDDY_DISABLE_LEARNING=1` makes runs repeatable, which is what made this visible, but it
+is a workaround.
+
+- [ ] An injected memory reference must not compete with the dimension for retrieval rank
+- [ ] Feed plan quality back into the learning engine: a mapping that lowers it should be
+  down-weighted, not reinforced
+
+### Desktop app (Tauri)
+
+Three interfaces over one core: web app, CLI, and — missing — a local desktop application.
+The engine already has no opinion about who calls it, and the CLI's `--local` mode proves
+the in-process path works without a backend, so the shape is already there.
+
+Package the existing React frontend with [Tauri](https://tauri.app) into a signed `.exe`
+(and the macOS/Linux equivalents). This is the shape most database tools ship in, and it
+removes the two things that stop an analyst evaluating DB Buddy on their own machine:
+standing up a backend, and trusting a browser with their database credentials.
+
+Design questions to settle before writing code:
+
+- **Where does the engine run?** Bundling Python inside the app (PyInstaller sidecar) makes
+  it genuinely standalone but ships a ~1 GB runtime; connecting to a backend keeps the app
+  thin but is then not really a desktop app. A third option is `--local`-style in-process
+  operation for a single user, with the platform features (sharing, audit, publishing)
+  appearing only when a backend is configured.
+- **Credential storage.** The `keyring` dependency is already present. A desktop build
+  should use the OS keychain rather than the app database, which also sidesteps the
+  `localStorage` token problem the web app has.
+- **What the frontend must stop assuming.** `VITE_API_BASE` is compiled in, and the app
+  currently assumes a reachable HTTP API; a Tauri build would call Rust commands instead
+  for at least the local path.
+
+- [ ] Decide the engine-location question above — everything else follows from it
+- [ ] Tauri shell around the existing frontend, talking to a local backend first (cheapest
+  proof, no packaging problem)
+- [ ] OS keychain for credentials and tokens
+- [ ] Bundled engine sidecar, if the standalone story is worth the install size
+- [ ] Signed installers + auto-update
+
+### Semantic-layer correction
+The engine already learns mappings. It cannot yet be *told* it is wrong.
+
+- [ ] An inline "this mapping is wrong" affordance on the explanation trace.
+- [ ] An admin view to browse, edit, and delete learned mappings per database.
+- [ ] Provenance on every mapping: learned, corrected, or seeded.
+
+This is the durable advantage over a general-purpose model — the system gets measurably
+better at *your* schema, and you can see exactly how.
+
+### Contributor experience
+- [ ] **Split the large files.** `frontend/src/routes/app.tsx` (4.4k lines),
+  `dbbuddy_core/intent_builder.py`, and `dbbuddy_core/query_planner.py` are the biggest
+  structural barrier to outside contribution. **[help wanted]**
+- [ ] **Frontend tests** — Vitest plus a smoke render per panel; there are currently none.
+  **[help wanted]**
+- [ ] One end-to-end happy path: login → analyze → query → chart.
+
+---
+
+## Later — running it at scale
+
+### Shared state
+Several coordination structures are per worker process: the session-revocation cache, the
+prepared database contexts, and the per-target concurrency semaphore. Two replicas behind a
+load balancer therefore behave differently from one.
+
+- [ ] Move each to Redis, or formally support "single worker" as a deployment profile and
+  document it as such.
+
+### Pluggable vector backend
+Embedded Chroma writes to local disk, which makes any node holding it stateful and gives two
+replicas divergent semantic memory.
+
+- [ ] A backend interface behind `vector_store.py`, with **pgvector** as the natural default
+  — the application database is already PostgreSQL in production.
+
+### Observability
+For a system whose selling point is its pipeline, the pipeline is currently invisible in
+production.
+
+- [ ] Prometheus `/metrics`: per-stage latency histograms, cache hit rate, AI provider
+  latency and error rate, target-database pool saturation.
+- [ ] OpenTelemetry spans per pipeline stage.
+- [ ] Structured JSON logs carrying the existing request correlation id.
+
+### Multi-tenancy at load
+- [ ] Per-organization concurrency share and queue depth, so one heavy query cannot starve
+  every other tenant.
+- [ ] Per-organization AI token budget with a meter and a hard stop, surfaced in the admin
+  console.
+- [ ] Long-running work (`/analyze` against a very large schema) routed through the existing
+  job queue rather than a request handler.
+
+### More engines
+- [ ] DuckDB **[help wanted]**
+- [ ] Snowflake / BigQuery — each needs the dialect contract plus a sensible cost ceiling,
+  since on those engines a careless query costs money rather than time.
+
+---
+
+## Explicitly not planned
+
+Saying no is part of a roadmap.
+
+- **LLM-generated SQL, even as an opt-in "advanced mode."** It would quietly become the path
+  everything falls back to, and the guarantee the project exists to make would be gone.
+- **A hosted SaaS.** DB Buddy is self-hosted. That may change; it is not the plan.
+- **A BI suite.** Charts and dashboards exist to make query results legible, not to compete
+  with tools built for that job.
+- **Schema-specific fixes.** If a query shape only works on one schema, the mechanism is
+  wrong. See [CONTRIBUTING.md](../CONTRIBUTING.md#non-negotiables).
+
+---
+
+## Suggesting a change
+
+Open an issue with the
+[feature request template](https://github.com/sxjalxo/dbbuddy/issues/new?template=feature_request.yml).
+The template asks how a capability generalizes across schemas, which is the question that
+decides whether something lands here.

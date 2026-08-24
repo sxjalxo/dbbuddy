@@ -1,0 +1,12 @@
+{
+  "description": "Banking: two FKs to the same table (from/to account) + descriptive FK names.",
+  "tables": {
+    "accounts": {"account_id": "int", "account_name": "varchar(80)", "balance": "decimal(18,2)", "opened_at": "date", "owner_id": "int"},
+    "transfers": {"transfer_id": "int", "from_account_id": "int", "to_account_id": "int", "amount": "decimal(18,2)", "transferred_at": "timestamp", "status": "varchar(20)"},
+    "customers": {"customer_id": "int", "full_name": "varchar(120)"}
+  },
+  "foreign_keys": {
+    "transfers": [["from_account_id", "accounts", "account_id"], ["to_account_id", "accounts", "account_id"]],
+    "accounts": [["owner_id", "customers", "customer_id"]]
+  }
+}

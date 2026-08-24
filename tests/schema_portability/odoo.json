@@ -1,0 +1,12 @@
+{
+  "description": "Odoo: snake_case, FK column name differs from target table (partner_id -> res_partner).",
+  "tables": {
+    "res_partner": {"id": "int", "name": "varchar", "email": "varchar", "country_id": "int", "is_company": "bool", "active": "bool", "create_date": "timestamp"},
+    "sale_order": {"id": "int", "name": "varchar", "partner_id": "int", "amount_total": "numeric", "state": "varchar", "date_order": "timestamp"},
+    "res_country": {"id": "int", "name": "varchar", "code": "varchar"}
+  },
+  "foreign_keys": {
+    "sale_order": [["partner_id", "res_partner", "id"]],
+    "res_partner": [["country_id", "res_country", "id"]]
+  }
+}

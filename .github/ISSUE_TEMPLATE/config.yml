@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/sxjalxo/dbbuddy/security/advisories/new
+    about: Report privately. Do not open a public issue for a vulnerability.
+  - name: Question or idea
+    url: https://github.com/sxjalxo/dbbuddy/discussions
+    about: Usage questions, setup help, and open-ended ideas belong in Discussions.
+  - name: Contributor guide
+    url: https://github.com/sxjalxo/dbbuddy/blob/main/CONTRIBUTING.md
+    about: Setup, testing, and the project's non-negotiables before you open a PR.

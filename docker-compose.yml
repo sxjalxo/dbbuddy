@@ -1,0 +1,93 @@
+# DB Buddy — one-command demo.
+#
+#   docker compose up
+#
+# Then open http://localhost:3000 and sign in as analyst@dbbuddy.io / Analyst#12345.
+# The sample database is already connected; click Analyze Schema once, then ask
+# something like "total revenue by region last quarter".
+#
+# ── This is a demo, not a deployment ────────────────────────────────────────
+# The secrets below are committed, public, and identical on every machine that
+# runs this file, and the demo accounts have known passwords. `DBBUDDY_ENV` is
+# therefore left at `development` on purpose: setting it to `production` would
+# imply these values are safe, which they are not. For a real deployment start
+# from docs/DEPLOYMENT.md, which requires generated secrets and no demo accounts.
+#
+# Two databases live in the one Postgres server, and the separation is the point:
+#   dbbuddy_app   platform state (users, roles, connections, charts, audit)
+#   dbbuddy_demo  the sample business database — a query target only
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: dbbuddy
+      POSTGRES_PASSWORD: dbbuddy
+      # Creates the sample database; docker/init/01-app-database.sql adds the
+      # application database alongside it.
+      POSTGRES_DB: dbbuddy_demo
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # Runs once, on an empty volume, in filename order.
+      - ./docker/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      # Host 5442: 5432 and 5433 are commonly taken (5433 by
+      # docker-compose.test.yml). Only published so you can poke at the sample
+      # data with psql — nothing in this stack needs it.
+      - "5442:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbbuddy -d dbbuddy_demo"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_DATABASE_URL: postgresql+psycopg2://dbbuddy:dbbuddy@db:5432/dbbuddy_app
+      # Demo-only. Both must be set or the backend derives an ephemeral key and
+      # every saved credential becomes unreadable on restart.
+      JWT_SECRET: demo-only-jwt-secret-not-for-any-real-deployment-0000
+      APP_SECRET_KEY: demo-only-app-secret-not-for-any-real-deployment-0000
+      # The browser origin the UI is served from. Never a wildcard.
+      ALLOWED_ORIGINS: http://localhost:3000
+      # The demo answers the same question the same way on every machine. The
+      # semantic layer still applies what it has learned; it just stops writing,
+      # so a maintainer's warm instance and a visitor's cold one agree. Drop this
+      # line to watch the learning work.
+      DBBUDDY_DISABLE_LEARNING: "1"
+      # Where bootstrap.py points the pre-registered connection.
+      DEMO_DB_HOST: db
+      DEMO_DB_PORT: "5432"
+      DEMO_DB_USER: dbbuddy
+      DEMO_DB_PASSWORD: dbbuddy
+      DEMO_DB_NAME: dbbuddy_demo
+    volumes:
+      # Persist what an Analyze produces, so a restart does not re-embed.
+      - engine-chroma:/data/chroma
+      - engine-cache:/app/.dbbuddy_cache
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Compiled into the bundle — this is the URL the browser calls, so it is
+        # localhost (the published backend port), not the `backend` service name.
+        VITE_API_BASE: http://localhost:8000
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+
+volumes:
+  db-data:
+  engine-chroma:
+  engine-cache:

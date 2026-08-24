@@ -1,0 +1,9 @@
+{
+  "description": "E-commerce: conventional _id FKs, junction table (order_items), a boolean flag column (in_stock).",
+  "tables": {
+    "customers": {"customer_id": "int", "name": "varchar(120)", "email": "varchar(120)", "created_at": "timestamp"},
+    "orders": {"order_id": "int", "customer_id": "int", "order_date": "date", "total": "decimal(12,2)", "status": "varchar(20)", "is_paid": "boolean"},
+    "order_items": {"order_id": "int", "product_id": "int", "quantity": "int", "unit_price": "decimal(12,2)"},
+    "products": {"product_id": "int", "product_name": "varchar(120)", "price": "decimal(12,2)", "in_stock": "boolean", "category": "varchar(40)"}
+  }
+}

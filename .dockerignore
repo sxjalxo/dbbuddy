@@ -1,0 +1,48 @@
+# Keep the build context small and free of local state. Anything here is either
+# rebuilt in the image, machine-local, or must never reach a container.
+
+.git
+.github
+.venv
+venv
+env
+node_modules
+frontend/node_modules
+frontend/dist
+frontend/.output
+frontend/.vinxi
+frontend/.nitro
+frontend/.tanstack
+
+__pycache__
+**/__pycache__
+*.pyc
+*.egg-info
+.pytest_cache
+.hypothesis
+.ruff_cache
+.mypy_cache
+
+# Local state and secrets — the image must never carry these.
+.env
+*.env
+!.env.example
+.dbbuddy
+.dbbuddy_cache
+chroma_db
+backend/chroma_db
+logs
+memory
+*.db
+*.sqlite
+*.sqlite3
+
+# Dogfood datasets: gigabytes, licensed, and irrelevant to a running container.
+data
+
+# Docs and working files — not needed to build or run.
+docs
+Examples
+Report.md
+*.md
+!README.md

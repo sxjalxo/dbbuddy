@@ -1,0 +1,106 @@
+name: Wrong answer / wrong SQL
+description: DB Buddy returned SQL or a result that is incorrect for your question
+labels: ["wrong-answer", "needs-repro"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A wrong-answer report is only actionable with a reproduction — the engine's
+        behavior depends entirely on your schema, and we cannot see it.
+
+        **The fastest path to a fix is a dogfood case.** See
+        [`scripts/dogfood/`](https://github.com/sxjalxo/dbbuddy/tree/main/scripts/dogfood):
+        a case is a schema, some rows, a question, and an invariant. It reproduces the bug
+        for us in one command and then stays as a permanent regression test.
+
+        If you cannot share your schema, a **minimal synthetic schema** that reproduces
+        the same shape works just as well — and is usually easier to write than an
+        explanation.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: The question you asked
+      placeholder: "total revenue by region last quarter"
+    validations:
+      required: true
+
+  - type: textarea
+    id: sql
+    attributes:
+      label: SQL DB Buddy produced
+      render: sql
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What the SQL should have been, and why
+      description: The correct query, plus what the engine got wrong — wrong join, wrong grouping, wrong measure, missing filter.
+    validations:
+      required: true
+
+  - type: textarea
+    id: schema
+    attributes:
+      label: Minimal schema that reproduces it
+      description: |
+        `CREATE TABLE` statements for the tables involved, including primary and foreign
+        keys. Foreign keys matter — join inference reads declared FK metadata.
+      render: sql
+    validations:
+      required: true
+
+  - type: textarea
+    id: trace
+    attributes:
+      label: Reasoning trace
+      description: Every result carries one. Paste it — it usually names the wrong decision directly.
+      render: text
+
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Database engine
+      options:
+        - MySQL / MariaDB
+        - PostgreSQL
+        - SQL Server
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: DB Buddy version or commit
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: How you ran it
+      options:
+        - Web app
+        - CLI (platform mode)
+        - CLI (--local)
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: ai
+    attributes:
+      label: AI labeling
+      options:
+        - label: An AI provider was configured when the schema was analyzed
+        - label: I re-ran `analyze` after any provider change
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before submitting
+      options:
+        - label: I understand this needs a reproducible schema, and I have included one (or a synthetic equivalent).
+          required: true

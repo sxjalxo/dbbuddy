@@ -1,0 +1,8 @@
+{
+  "description": "Healthcare: composite name columns (first_name/last_name), numeric observations, multiple date columns.",
+  "tables": {
+    "patients": {"patient_id": "int", "mrn": "varchar(20)", "first_name": "varchar(50)", "last_name": "varchar(50)", "dob": "date", "gender": "char(1)"},
+    "encounters": {"encounter_id": "int", "patient_id": "int", "admit_date": "date", "discharge_date": "date", "department": "varchar(50)"},
+    "observations": {"obs_id": "int", "encounter_id": "int", "code": "varchar(20)", "value_num": "decimal(10,2)", "observed_at": "timestamp"}
+  }
+}

@@ -1,0 +1,276 @@
+# ===============================
+# ENV & SECRETS
+# ===============================
+.env
+.env.*
+*.env
+*.local
+# ...but keep the committed, secret-free template (documents every config var).
+!.env.example
+
+# ===============================
+# RUNTIME / AI MEMORY (Phase 6)
+# ===============================
+# Learned term->column mappings, partitioned per database (host|database|engine).
+# Machine- and deployment-local, and it holds customer schema vocabulary — never
+# commit it. See docs/ARCHITECTURE.md "Semantic memory is per database".
+memory/
+semantic_memory.json
+semantic_layer.json
+*.cache.json
+*.embeddings
+*.vectorstore
+*.index
+*CLAUDE.md
+
+# Vector store persistence (ChromaDB). CHROMADB_PERSIST_DIRECTORY overrides the
+# location; benchmarks point it at a scratch dir so throwaway schemas never land
+# here.
+chroma_db/
+
+# Per-database prepared context (persisted semantic layers)
+.dbbuddy_cache/
+
+# CLI semantic-layer export and temp backups
+output.json
+*.fwbackup
+*.tmp.json
+
+# ===============================
+# PYTHON
+# ===============================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# ===============================
+# TESTING
+# ===============================
+.pytest_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
+# Benchmark run exports (`run_all.py --json <path>`). Machine- and moment-
+# specific, so they are noise in a diff. Note that
+# scripts/benchmarks/baseline.json is deliberately NOT ignored — it is the
+# committed reference the regression gate compares against.
+benchmark-*.json
+benchmark-results/
+
+# ===============================
+# LINTERS / TYPE CHECKERS
+# ===============================
+.ruff_cache/
+.mypy_cache/
+.pytype/
+*.orig
+
+# ===============================
+# VIRTUAL ENVIRONMENTS
+# ===============================
+.venv/
+venv/
+env/
+
+# ===============================
+# DATABASE FILES
+# ===============================
+*.db
+*.sqlite
+*.sqlite3
+# SQLite sidecar files (WAL / journal) for the dev application DB
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Practice / dogfood datasets: schema dumps and sample data pulled in to exercise
+# the planner against realistic ERP schemas. Large, often licensed, and never a
+# reviewable diff. The *distilled* schema fixtures that back regression tests are
+# small JSON under tests/schema_portability/ and stay committed — that is the
+# artifact worth keeping from a dogfood run, not the dump it came from.
+*.sql
+*.sql.gz
+*.dump
+*.bak
+*.mdb
+*.accdb
+# ...but the demo stack's seed SQL is source, not a dump: it is small, reviewable,
+# and the one-command demo does not exist without it. Negation works here only
+# because no parent directory is excluded — git cannot re-include a file that
+# sits inside an excluded directory.
+!docker/*.sql
+!docker/**/*.sql
+fixtures/data/
+sample_data/
+practice_dbs/
+# Root-anchored: a top-level dumped-data dir, NOT the tracked scripts/dogfood/
+# harness code. A bare `dogfood/` matched scripts/dogfood/ and silently made the
+# whole correctness harness uncommittable.
+/dogfood/
+
+# ===============================
+# LOGS
+# ===============================
+logs/
+*.log
+
+# ===============================
+# FRONTEND (React / Vite)
+# ===============================
+# frontend/.gitignore already covers the TanStack Start build outputs
+# (.output, .vinxi, .nitro, .tanstack); these are the root-level equivalents.
+node_modules/
+dist/
+build/
+.vite/
+
+# TypeScript incremental build info + ESLint cache (written by `tsc --build`
+# and `eslint --cache`; machine-local, never useful in a diff).
+*.tsbuildinfo
+.eslintcache
+
+# ===============================
+# OS FILES
+# ===============================
+.DS_Store
+Thumbs.db
+
+# ===============================
+# EDITOR / IDE
+# ===============================
+.vscode/
+.idea/
+.claude/
+# Project-local MCP server config (may hold machine paths / tokens). Remove this
+# line if you intend to commit a shared, secret-free .mcp.json for the team.
+.mcp.json
+
+# ===============================
+# TEMP / DEBUG
+# ===============================
+*.tmp
+*.bak
+*.swp
+
+# ===============================
+# SECURITY FILES
+# ===============================
+# Private keys, certificates, and keystores. Broad on purpose: a committed key is
+# unrecoverable (rotation is the only fix), so the cost of over-ignoring is a
+# `git add -f` and the cost of under-ignoring is an incident.
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+# Cloud / CI credential files that land in a repo root by habit.
+.npmrc
+.pypirc
+gha-creds-*.json
+service-account*.json
+credentials.json
+*_credentials.json
+
+# ===============================
+# Extras
+# ===============================
+demo_queries.py
+demo_benchmark.py
+
+# ===============================
+# LOCAL APP DATA / SECRETS
+# ===============================
+# CLI credential cache (personal API key + JWT tokens written by `dbbuddy login`)
+.dbbuddy/
+secrets.json
+*.env.json
+
+# ===============================
+# LOCAL CONFIG
+# ===============================
+config.json
+settings.json
+
+# ===============================
+# COVERAGE
+# ===============================
+coverage.xml
+.coverage.*
+
+# ===============================
+# PACKAGING / TOOLCHAIN CACHES
+# ===============================
+# Local interpreter pin and resolver caches — machine-specific, never shared.
+.python-version
+.uv/
+.pdm-python
+pip-wheel-metadata/
+*.whl
+
+# ===============================
+# PLANNING ARTIFACTS (local only)
+# ===============================
+docs/PRODUCT_MILESTONES.md
+.planning/tmp/
+# Large dogfood dataset (employees sample DB) — never commit
+data/employees/
+
+# AirportDB dogfood dataset — 626MB MySQL-Shell dump plus its extraction. The
+# full build is a ~10GB SQLite file and lives in the temp dir, not here.
+data/airport-db.zip
+data/airport-db.tar.gz
+data/airport-db/
+
+# AdventureWorks dogfood dataset (MS OLTP CSVs + built SQLite)
+data/adventureworks-src/
+data/adventureworks.db
+
+# TPC dogfood datasets. The row data is *generated* by
+# scripts/dogfood/dataset_tpch.py / dataset_tpcds.py — only the downloaded
+# reference DDL and any built SQLite file land here, and neither is a
+# reviewable diff.
+data/tpcds-src/
+data/tpch-src/
+data/tpc*.db
+
+# Built dogfood databases, wherever a run is pointed. They normally land in the
+# system temp dir; `--db ./something.db` puts one in the repo. All are caches —
+# rebuilding a generated set takes seconds — and some are 100s of MB.
+dbbuddy_dogfood*.db
+dogfood_*.db
+
+# ===============================
+# DOCKER
+# ===============================
+# The Dockerfile, compose file, and the demo seed under docker/ are all source
+# and stay committed. Only what a *local* run produces or overrides is ignored.
+#
+# Compose picks up docker-compose.override.yml automatically when it exists,
+# which makes it the standard place for machine-local ports, mounts and env —
+# never something to share.
+docker-compose.override.yml
+docker-compose.local.yml
+# Bind-mounted container state (database files, uploads) for a run pointed at the
+# repo instead of a named volume.
+.docker/
+docker-data/
+
+# ===============================
+# INTERNAL / LOCAL DOCS
+# ===============================
+# Internal review / working backlog. Personal working doc, not part of the
+# public repo — keep the improvement plan out of the shipped tree.
+Report.md
+

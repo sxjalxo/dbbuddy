@@ -1,0 +1,52 @@
+# Local integration-test databases for the dialect layer.
+#
+#   docker compose -f docker-compose.test.yml up -d
+#   pip install pymssql          # SQL Server driver
+#   pytest -m integration        # runs tests/integration/* against these
+#   docker compose -f docker-compose.test.yml down -v
+#
+# Credentials here are throwaway/dev-only. Do not reuse them anywhere real.
+services:
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_DATABASE: testdb
+    ports:
+      # Host 3307 to avoid clashing with a local MySQL on 3306.
+      - "3307:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-prootpw"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: testdb
+    ports:
+      # Host 5433 to avoid clashing with a local/platform Postgres on 5432.
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d testdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Str0ng!Passw0rd"
+      MSSQL_PID: "Developer"
+    ports:
+      - "1433:1433"
+    healthcheck:
+      # sqlcmd path/flags vary by image tag; the test suite also retries the
+      # connection itself, so this is a best-effort readiness signal.
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20

@@ -1,0 +1,12 @@
+{
+  "description": "SAP-style ERP: cryptic table/column names, composite keys, FKs on non-_id columns.",
+  "tables": {
+    "VBAK": {"MANDT": "char(3)", "VBELN": "char(10)", "ERDAT": "date", "NETWR": "decimal(15,2)", "KUNNR": "char(10)", "WAERK": "char(5)"},
+    "VBAP": {"MANDT": "char(3)", "VBELN": "char(10)", "POSNR": "char(6)", "MATNR": "char(18)", "KWMENG": "decimal(13,3)", "NETWR": "decimal(15,2)"},
+    "KNA1": {"MANDT": "char(3)", "KUNNR": "char(10)", "NAME1": "char(35)", "LAND1": "char(3)", "ORT01": "char(35)"}
+  },
+  "foreign_keys": {
+    "VBAP": [["VBELN", "VBAK", "VBELN"]],
+    "VBAK": [["KUNNR", "KNA1", "KUNNR"]]
+  }
+}

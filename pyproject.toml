@@ -1,0 +1,65 @@
+[project]
+name = "dbbuddy"
+dynamic = ["version"]  # sourced from dbbuddy.__version__ (see [tool.setuptools.dynamic])
+description = "Deterministic NL-to-SQL CLI and semantic-layer engine"
+authors = [{name = "Sujal Garje"}]
+readme = "README.md"
+requires-python = ">=3.10"
+# Apache-2.0 — declared as a classifier rather than PEP 639's `license = "..."`
+# string, which needs setuptools >= 77 and would break the >= 61 floor below.
+classifiers = ["License :: OSI Approved :: Apache Software License"]
+# The installable CLI (`dbbuddy`) and the engine it drives. The *server* has a
+# larger dependency set (auth, app DB, embeddings) — see requirements.txt, which
+# is the single source of truth for a deployment. Keep the two in sync when a
+# runtime import is added.
+dependencies = [
+    "mysql-connector-python>=8.3.0",
+    "psycopg2-binary>=2.9.0",
+    "pymssql>=2.2.0",
+    "requests>=2.31.0",
+    "pydantic>=2.0.0",
+    "chromadb>=0.4.24",
+    "onnxruntime>=1.17.0",
+    "keyring>=24.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0",
+    "hypothesis>=6.100.0",
+    "httpx>=0.27.0",       # required by fastapi.testclient.TestClient
+    "fastapi>=0.100.0",
+    "uvicorn>=0.24.0",
+    "pydantic>=2.0.0",
+    "ruff>=0.4.0",
+    "vulture>=2.11",
+]
+
+[project.scripts]
+dbbuddy = "dbbuddy.main:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = {attr = "dbbuddy.__version__"}
+
+[tool.setuptools.packages.find]
+exclude = ["logs*", "tests*", ".venv*", "__pycache__*", "*.egg-info*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Live-DB tests are opt-in: the default run excludes them. Run them with
+# `pytest -m integration` after `docker compose -f docker-compose.test.yml up -d`.
+addopts = "-m 'not integration'"
+markers = [
+    "integration: requires live databases (MySQL/PostgreSQL/SQL Server) — opt in with -m integration",
+]
+
+[tool.black]
+line-length = 100
+
+[tool.isort]
+profile = "black"
+line_length = 100

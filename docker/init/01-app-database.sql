@@ -1,0 +1,12 @@
+-- Runs once, on first boot of the Postgres volume.
+--
+-- Two databases live in this one server, and keeping them apart is the whole
+-- point of DB Buddy's data model:
+--
+--   dbbuddy_app   platform state — users, roles, connections, charts, audit
+--   dbbuddy_demo  the sample business database, a *query target only*
+--
+-- POSTGRES_DB creates dbbuddy_demo (see docker-compose.yml), so only the
+-- application database needs creating here. 02-demo-schema.sql then runs
+-- against dbbuddy_demo and fills it with the sample ERP data.
+CREATE DATABASE dbbuddy_app;
