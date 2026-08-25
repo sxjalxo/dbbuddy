@@ -95,7 +95,7 @@ onnxruntime>=1.17.0
 # and authentication throttling degrades to a stricter per-process window. The
 # code tolerates its absence everywhere; a multi-worker deployment should still
 # have it. See docs/SECURITY.md.
-redis>=5.0.0
+redis>=8.1.0
 
 # Secure API-key storage via the OS keyring (Credential Manager / Keychain /
 # Secret Service). Falls back to a mode-0600 local file if no backend exists.
