@@ -55,7 +55,7 @@ cryptography>=42.0.0        # Fernet at-rest encryption for ERP + provider secre
 
 # MFA / 2FA: TOTP + QR provisioning (qrcode renders SVG, so no PIL).
 pyotp>=2.9.0
-qrcode>=7.4.0
+qrcode>=8.2
 
 # Background jobs: in-process scheduler (no external broker).
 apscheduler>=3.10.0
