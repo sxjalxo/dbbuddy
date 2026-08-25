@@ -71,6 +71,7 @@ def _run_context_rebuild(db, job: ScheduledJob) -> str:
     config = DBConfig(
         host=conn.host, user=conn.username, password=decrypt_secret(conn.password_encrypted),
         database=conn.database, engine=conn.engine, port=conn.port,
+        db_schema=conn.db_schema,
     )
     context_store.rebuild(config)
     return f"Rebuilt query context for '{conn.name}'."

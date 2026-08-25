@@ -28,8 +28,8 @@ def _connection_out(conn: DatabaseConnection) -> ConnectionOut:
         credentials_ok = False
     return ConnectionOut(
         id=conn.id, name=conn.name, engine=conn.engine, host=conn.host, port=conn.port,
-        username=conn.username, database=conn.database, created_at=conn.created_at,
-        credentials_ok=credentials_ok,
+        username=conn.username, database=conn.database, db_schema=conn.db_schema,
+        created_at=conn.created_at, credentials_ok=credentials_ok,
     )
 
 
@@ -66,6 +66,9 @@ def create_connection(
         username=req.username,
         password_encrypted=encrypt_secret(req.password),
         database=req.database,
+        # Blank means "no schema chosen", not a schema whose name is the empty
+        # string — the form submits "" for an untouched optional input.
+        db_schema=(req.db_schema or None),
     )
     db.add(conn)
     db.flush()
@@ -105,6 +108,10 @@ def update_connection(
         conn.username = req.username
     if req.database is not None:
         conn.database = req.database
+    # Omitted (None) leaves the schema alone; blank clears it back to "follow the
+    # search path". The two are different intents and the form can express both.
+    if req.db_schema is not None:
+        conn.db_schema = req.db_schema or None
     # Only replace the secret when a new one is actually supplied.
     if req.password:
         conn.password_encrypted = encrypt_secret(req.password)

@@ -166,6 +166,7 @@ def _build_jobs(db: Session, dashboard: Dashboard) -> list[ChartJob]:
             host=conn.host if conn else None,
             port=conn.port if conn else None,
             database=conn.database if conn else None,
+            db_schema=conn.db_schema if conn else None,
             username=conn.username if conn else None,
             password=password,
         ))

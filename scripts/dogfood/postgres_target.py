@@ -25,10 +25,18 @@ The dataset builders stay untouched. They know how to produce a SQLite file, so
 that file is copied into PostgreSQL — schema, declared types, primary keys,
 foreign keys and rows — and the suites then run against the copy.
 
-**Size.** Copying is row-by-row over a single connection, which is fine for the
-generated sets (`erp`, `hospital`, `legacy`, `tpch`) and unreasonable for the
-large imported ones (`employees` at ~4M rows, `airportdb` at up to ~59M). Use
-this target for shape, and SQLite for scale.
+**Size.** Rows go in through ``COPY … FROM STDIN``, streamed straight out of the
+SQLite cursor, so the large imported datasets (`employees` at ~4M rows,
+`airportdb` at up to ~59M) load in bounded memory and at bulk-load speed rather
+than one ``INSERT`` batch at a time. Constraints follow the data — tables are
+created bare, rows are copied, and the primary keys and foreign keys are added
+afterwards — because maintaining a unique index per row is most of the cost of
+loading a large table, and PostgreSQL builds the same index far faster in one
+pass at the end.
+
+A constraint that only fails *after* the load is a deliberate trade. The failure
+is louder that way (``ALTER TABLE`` names the constraint and the offending row)
+rather than surfacing as a mid-copy error on row 4 million.
 
 **Why a whole database rather than a schema.** The PostgreSQL dialect scopes every
 introspection query to ``table_schema = 'public'``, so a dataset loaded into a named
@@ -196,6 +204,109 @@ def _quote(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
+# ── COPY encoding ─────────────────────────────────────────────────────────────
+#
+# COPY's default text format is tab-separated, newline-terminated, with backslash
+# escapes and ``\N`` for NULL. It is faster than CSV to produce and to parse, and
+# unlike CSV it distinguishes NULL from the empty string without any quoting
+# rules at all.
+#
+# Every escape below is load-bearing on real data. `legacy` stores non-ASCII and
+# separator-only-different identifiers, and the AdventureWorks CSVs carry embedded
+# tabs; an unescaped tab does not raise, it shifts every later column by one and
+# lands a dataset that grades wrong. That is the failure this format makes easy to
+# get wrong and cheap to get right.
+
+_ESCAPES = (
+    # Backslash first, always: escaping it after the others would double the
+    # backslash they just introduced, turning a real newline into the literal
+    # two characters and vice versa.
+    (chr(92), chr(92) * 2),
+    ("\b", chr(92) + "b"),
+    ("\f", chr(92) + "f"),
+    ("\n", chr(92) + "n"),
+    ("\r", chr(92) + "r"),
+    ("\t", chr(92) + "t"),
+    ("\v", chr(92) + "v"),
+)
+
+_NULL = chr(92) + "N"
+
+
+def _copy_encode(value) -> str:
+    """One SQLite value as a COPY text-format field."""
+    if value is None:
+        return _NULL
+    # bool before int: bool subclasses int, and PostgreSQL will not accept "1"
+    # for a BOOLEAN column from COPY.
+    if isinstance(value, bool):
+        return "t" if value else "f"
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        # bytea hex input is \x…, and that backslash is itself escaped.
+        return chr(92) * 2 + "x" + bytes(value).hex()
+    if not isinstance(value, str):
+        return str(value)
+    for char, escape in _ESCAPES:
+        value = value.replace(char, escape)
+    return value
+
+
+def _copy_row(row) -> str:
+    """One SQLite row as a COPY text-format line, terminator included."""
+    return "\t".join(_copy_encode(v) for v in row) + "\n"
+
+
+class _CopyStream:
+    """A read()-able view over a SQLite cursor, for ``copy_expert``.
+
+    psycopg2 pulls from this rather than being handed a buffer, which is what
+    keeps memory flat: at any moment it holds one ``fetchmany`` batch plus one
+    partial line, whether the table has a thousand rows or fifty-nine million.
+    """
+
+    def __init__(self, cursor, batch: int = 10_000):
+        self._cursor = cursor
+        self._batch = batch
+        self._buffer = ""
+        self._exhausted = False
+        self.rows = 0
+
+    def _fill(self) -> bool:
+        """Pull one batch into the buffer. False when the cursor is spent."""
+        if self._exhausted:
+            return False
+        rows = self._cursor.fetchmany(self._batch)
+        if not rows:
+            self._exhausted = True
+            return False
+        self._buffer += "".join(_copy_row(row) for row in rows)
+        self.rows += len(rows)
+        return True
+
+    def read(self, size: int = -1) -> str:
+        if size is None or size < 0:
+            while self._fill():
+                pass
+            out, self._buffer = self._buffer, ""
+            return out
+        while len(self._buffer) < size and self._fill():
+            pass
+        out, self._buffer = self._buffer[:size], self._buffer[size:]
+        return out
+
+    def readline(self, size: int = -1) -> str:
+        while "\n" not in self._buffer and self._fill():
+            pass
+        if not self._buffer:
+            return ""
+        index = self._buffer.find("\n")
+        if index < 0:                           # no terminator left; return the rest
+            out, self._buffer = self._buffer, ""
+            return out
+        out, self._buffer = self._buffer[:index + 1], self._buffer[index + 1:]
+        return out
+
+
 def _sqlite_tables(conn: sqlite3.Connection) -> List[str]:
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' "
@@ -227,16 +338,19 @@ def _order_by_dependency(tables: List[str], fks: Dict[str, List[str]]) -> List[s
 
 
 def load_sqlite_into_postgres(sqlite_path: str, params: Dict[str, object] | None = None,
-                              batch: int = 1000) -> int:
+                              batch: int = 10_000) -> int:
     """Copy a dataset from its SQLite file into PostgreSQL. Returns the row count.
 
     The target database is dropped and recreated first, so a run always grades the
     dataset it thinks it is grading rather than whatever a previous run left
     behind. Tables land in ``public`` because that is the only schema the dialect
     introspects.
-    """
-    from psycopg2.extras import execute_values
 
+    Order is bare tables → ``COPY`` → primary keys → foreign keys. Rows arrive
+    with no index to maintain and no constraint to check per row, and PostgreSQL
+    then builds each index in one pass. ``batch`` is the SQLite fetch size, not a
+    statement size: one ``COPY`` per table streams the whole thing.
+    """
     params = params or pg_params()
     recreate_database(params)
     src = sqlite3.connect(sqlite_path)
@@ -266,17 +380,38 @@ def load_sqlite_into_postgres(sqlite_path: str, params: Dict[str, object] | None
     try:
         cur = dest.cursor()
 
+        # Bare tables: no primary key yet, so COPY has no unique index to
+        # maintain per row. The keys are added once the data is in.
         for table in ordered:
             cols = ", ".join(
                 f"{_quote(name)} {pg_type}" for name, pg_type, _ in columns[table]
             )
-            pk = ""
-            if pks[table]:
-                pk = ", PRIMARY KEY (" + ", ".join(_quote(c) for c in pks[table]) + ")"
-            cur.execute(f"CREATE TABLE {_quote(table)} ({cols}{pk})")
+            cur.execute(f"CREATE TABLE {_quote(table)} ({cols})")
 
-        # Foreign keys after every table exists, so a cycle or an out-of-order
-        # dependency cannot stop the schema being created.
+        for table in ordered:
+            names = [name for name, _, _ in columns[table]]
+            col_list = ", ".join(_quote(n) for n in names)
+            cursor = src.execute(f"SELECT {col_list} FROM {_quote(table)}")
+            stream = _CopyStream(cursor, batch=batch)
+            cur.copy_expert(f"COPY {_quote(table)} ({col_list}) FROM STDIN", stream)
+            total += stream.rows
+
+        # Primary keys after the rows. ADD PRIMARY KEY implies NOT NULL, which
+        # SQLite does not enforce on a non-INTEGER key column — so a file with a
+        # NULL in a declared key fails here rather than at row 4,000,000, and the
+        # error names the table.
+        for table in ordered:
+            if not pks[table]:
+                continue
+            key = ", ".join(_quote(c) for c in pks[table])
+            cur.execute(
+                f"ALTER TABLE {_quote(table)} ADD CONSTRAINT "
+                f"{_quote(f'pk_{table}')} PRIMARY KEY ({key})"
+            )
+
+        # Foreign keys last: every table exists and is populated, so a cycle or an
+        # out-of-order dependency cannot stop the schema being created, and each
+        # constraint is validated in one pass instead of row by row.
         for table in ordered:
             for i, (from_col, parent, to_col) in enumerate(fk_defs[table]):
                 if parent not in columns:
@@ -289,18 +424,6 @@ def load_sqlite_into_postgres(sqlite_path: str, params: Dict[str, object] | None
                     f"{_quote(f'fk_{table}_{i}')} FOREIGN KEY ({_quote(from_col)}) "
                     f"REFERENCES {_quote(parent)} ({_quote(target)})"
                 )
-
-        for table in ordered:
-            names = [name for name, _, _ in columns[table]]
-            col_list = ", ".join(_quote(n) for n in names)
-            insert = f"INSERT INTO {_quote(table)} ({col_list}) VALUES %s"
-            cursor = src.execute(f"SELECT {col_list} FROM {_quote(table)}")
-            while True:
-                rows = cursor.fetchmany(batch)
-                if not rows:
-                    break
-                execute_values(cur, insert, rows)
-                total += len(rows)
 
         dest.commit()
     except Exception:

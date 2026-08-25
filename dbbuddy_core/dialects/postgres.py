@@ -86,13 +86,28 @@ class PostgresDialect(Dialect):
     def apply_statement_timeout(self, raw_conn, seconds: float) -> bool:
         """PostgreSQL ``statement_timeout``, in **milliseconds**. The server aborts
         the statement itself, so this bounds the query rather than merely the
-        client's patience — a client-side give-up would leave the query running."""
+        client's patience — a client-side give-up would leave the query running.
+
+        **Committed, and that is not tidiness.** psycopg2 opens a transaction for
+        the ``SET``, and leaving it open broke the next thing every caller does:
+        ``conn.autocommit = True`` raised ``set_session cannot be used inside a
+        transaction``. Both call sites swallowed that exception, so a write ran
+        inside a transaction nobody committed and disappeared when the connection
+        closed — while ``/execute`` reported the rows as affected.
+
+        Committing also makes the setting stick. ``SET`` without ``LOCAL`` is
+        session-scoped, but a ``SET`` inside an uncommitted transaction is undone
+        by a rollback, so the timeout would have been lost exactly when a query
+        misbehaved enough to cause one.
+        """
         try:
             cur = raw_conn.cursor()
             try:
                 cur.execute("SET statement_timeout = %s", (int(seconds * 1000),))
             finally:
                 cur.close()
+            if not raw_conn.autocommit:
+                raw_conn.commit()
             return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not set a PostgreSQL statement timeout: %s", exc)

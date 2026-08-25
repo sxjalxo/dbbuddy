@@ -9,8 +9,19 @@ after ``docker compose -f docker-compose.test.yml up -d``). Verified live:
 connection on a mapped port, INFORMATION_SCHEMA introspection
 (tables/columns/PKs/FKs), TOP-based row limiting, autocommit, and dict-cursor rows.
 
-Still worth exercising before high-stakes production use: non-``dbo`` schemas,
-collation edge cases, large result sets, and concurrent writes.
+**Schemas.** Introspection is scoped to ``SCHEMA_NAME()`` — the connecting user's
+own default schema — not to the literal ``dbo``, which would repeat the hardcoded
+``public`` mistake the PostgreSQL dialect was fixed for. It previously scoped to
+*nothing*, so two same-named tables in different schemas merged into one entry
+carrying both tables' columns.
+
+Pointing at some *other* schema is refused rather than half-honoured: T-SQL has no
+``search_path``, so introspecting one schema while unqualified names resolve to
+another would leave the planner building on tables the query cannot see. Doing it
+properly needs schema-qualified identifier emission — see ``docs/ROADMAP.md``.
+
+Still worth exercising before high-stakes production use: collation edge cases,
+large result sets, and concurrent writes.
 """
 
 try:
@@ -49,13 +60,57 @@ class SQLServerDialect(Dialect):
     # ── Connection ────────────────────────────────────────────────────────────
 
     def connect(self, host, user, password, database, port=None, db_schema=None):
-        # SQL Server does have schemas (`dbo` and friends) and introspection here
-        # still assumes the default one. Accepted and ignored for now rather than
-        # silently pretending to honour it; see docs/ROADMAP.md.
+        """Connect, and refuse a schema this session cannot actually resolve.
+
+        PostgreSQL honours ``db_schema`` by setting ``search_path`` on the session,
+        so what is introspected and what an unqualified name resolves to are the
+        same thing by construction. **T-SQL has no session-level equivalent** — a
+        user's default schema is a property of the user, changed with DDL.
+
+        So the scope is ``SCHEMA_NAME()``, the connecting user's own default
+        schema, which gives the same guarantee by the same mechanism. A requested
+        schema that is not that one is refused rather than half-honoured:
+        introspecting one schema while unqualified names resolve to another is
+        precisely the drift the PostgreSQL fix exists to prevent, and it would
+        produce a plan built from tables the query cannot see.
+        """
         kwargs = dict(server=host.strip(), user=user, password=password, database=database)
         if port:
             kwargs["port"] = int(port)
-        return pymssql.connect(**kwargs)
+        conn = pymssql.connect(**kwargs)
+        try:
+            self.verify_schema(conn, db_schema)
+        except Exception:
+            conn.close()
+            raise
+        return conn
+
+    def session_schema(self, raw_conn) -> str | None:
+        """The schema that unqualified names in this session resolve to."""
+        cur = raw_conn.cursor()
+        try:
+            cur.execute("SELECT SCHEMA_NAME()")
+            row = cur.fetchone()
+            return row[0] if row else None
+        finally:
+            cur.close()
+
+    def verify_schema(self, raw_conn, db_schema: str | None) -> None:
+        """Raise unless ``db_schema`` is the session's own schema. No-op if None."""
+        if not db_schema:
+            return
+        current = self.session_schema(raw_conn)
+        # SQL Server identifiers are case-insensitive under the usual collations,
+        # so refusing "Sales" against "sales" would be a false alarm.
+        if current and current.lower() == db_schema.lower():
+            return
+        raise ValueError(
+            f"SQL Server cannot switch the schema a session resolves names against, "
+            f"and this connection resolves to {current!r}, not {db_schema!r}. "
+            f"Connect as a user whose default schema is {db_schema!r} "
+            f"(ALTER USER ... WITH DEFAULT_SCHEMA = {db_schema}), or drop the "
+            f"schema setting to use {current!r}."
+        )
 
     def ping(self, raw_conn) -> None:
         cur = raw_conn.cursor()
@@ -84,6 +139,7 @@ class SQLServerDialect(Dialect):
             SELECT TABLE_NAME
             FROM INFORMATION_SCHEMA.TABLES
             WHERE TABLE_TYPE = 'BASE TABLE'
+              AND TABLE_SCHEMA = SCHEMA_NAME()
             ORDER BY TABLE_NAME
             """
         )
@@ -95,6 +151,7 @@ class SQLServerDialect(Dialect):
                 SELECT COLUMN_NAME
                 FROM INFORMATION_SCHEMA.COLUMNS
                 WHERE TABLE_NAME = %s
+                  AND TABLE_SCHEMA = SCHEMA_NAME()
                 ORDER BY ORDINAL_POSITION
                 """,
                 (table,),
@@ -111,6 +168,7 @@ class SQLServerDialect(Dialect):
             SELECT TABLE_NAME
             FROM INFORMATION_SCHEMA.TABLES
             WHERE TABLE_TYPE = 'BASE TABLE'
+              AND TABLE_SCHEMA = SCHEMA_NAME()
             ORDER BY TABLE_NAME
             """
         )
@@ -125,6 +183,7 @@ class SQLServerDialect(Dialect):
               ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
              AND tc.TABLE_SCHEMA    = kcu.TABLE_SCHEMA
             WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+              AND tc.TABLE_SCHEMA = SCHEMA_NAME()
             """
         )
         pk_cols: set[tuple[str, str]] = set(cur.fetchall())
@@ -136,6 +195,7 @@ class SQLServerDialect(Dialect):
                 SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
                 FROM INFORMATION_SCHEMA.COLUMNS
                 WHERE TABLE_NAME = %s
+                  AND TABLE_SCHEMA = SCHEMA_NAME()
                 ORDER BY ORDINAL_POSITION
                 """,
                 (table,),
@@ -161,7 +221,12 @@ class SQLServerDialect(Dialect):
                 JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE pk
                   ON rc.UNIQUE_CONSTRAINT_NAME = pk.CONSTRAINT_NAME
                  AND fk.ORDINAL_POSITION       = pk.ORDINAL_POSITION
-                WHERE fk.TABLE_NAME = %s
+                WHERE fk.TABLE_NAME  = %s
+                  -- A constraint name is unique per schema, not per database, so
+                  -- joining on name alone can pair this key with another schema's
+                  -- constraint and invent a relationship that does not exist.
+                  AND fk.TABLE_SCHEMA = SCHEMA_NAME()
+                  AND pk.TABLE_SCHEMA = SCHEMA_NAME()
                 """,
                 (table,),
             )

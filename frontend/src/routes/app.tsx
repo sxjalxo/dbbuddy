@@ -207,6 +207,9 @@ type DB = {
   host: string;
   user: string;
   database: string;
+  // Namespace within the database, for engines that have one. Empty means
+  // "follow the connection's search path" — not the same as "public".
+  dbSchema: string;
   // False when the backend can no longer decrypt this connection's saved
   // password (at-rest key changed). Surfaced as a warning + edit prompt.
   credentialsOk: boolean;
@@ -315,6 +318,7 @@ function apiConnToDb(c: ApiConnection): DB {
     host: c.host,
     user: c.username,
     database: c.database,
+    dbSchema: c.db_schema ?? "",
     // Default true for older responses that predate the field.
     credentialsOk: c.credentials_ok !== false,
   };
@@ -1494,6 +1498,9 @@ function DBBuddyApp() {
             password: fields.password,
             database: fields.database,
             port: fields.port,
+            // Omitted entirely when blank, so the record stores NULL rather than
+            // a schema whose name is the empty string.
+            ...(fields.dbSchema.trim() ? { db_schema: fields.dbSchema.trim() } : {}),
           });
           const db = apiConnToDb(created);
           setDatabases((d) => [...d, db]);
@@ -1511,6 +1518,9 @@ function DBBuddyApp() {
             username: fields.user,
             database: fields.database,
             port: fields.port,
+            // Always sent, unlike the password: blank here means "clear the
+            // schema", which the API distinguishes from "leave it alone".
+            db_schema: fields.dbSchema.trim() || null,
             ...(fields.password ? { password: fields.password } : {}),
           });
           const db = apiConnToDb(updated);
@@ -4242,6 +4252,7 @@ function ConnectDatabaseModal({
     user: string;
     password: string;
     database: string;
+    dbSchema: string;
     port: number | null;
   }) => Promise<void>;
   onUpdate: (
@@ -4253,6 +4264,7 @@ function ConnectDatabaseModal({
       user: string;
       password: string;
       database: string;
+      dbSchema: string;
       port: number | null;
     },
   ) => Promise<void>;
@@ -4267,9 +4279,15 @@ function ConnectDatabaseModal({
   const [user, setUser] = useState("root");
   const [password, setPassword] = useState("");
   const [database, setDatabase] = useState("testdb");
+  const [dbSchema, setDbSchema] = useState("");
   const [port, setPort] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // MySQL has no namespace *inside* a database — its "schema" and its database
+  // are the same object — so offering the field there would invite a value that
+  // cannot mean anything.
+  const supportsSchema = engine === "PostgreSQL" || engine === "SQL Server";
 
   // When the dialog opens, prefill from the connection being edited (or reset to
   // sensible defaults for a brand-new connection). Password always starts empty:
@@ -4284,6 +4302,7 @@ function ConnectDatabaseModal({
       setHost(editing.host);
       setUser(editing.user);
       setDatabase(editing.database);
+      setDbSchema(editing.dbSchema ?? "");
       setPort("");
     } else {
       setName("");
@@ -4291,6 +4310,7 @@ function ConnectDatabaseModal({
       setHost("127.0.0.1");
       setUser("root");
       setDatabase("testdb");
+      setDbSchema("");
       setPort("");
     }
   }, [open, editing]);
@@ -4311,6 +4331,10 @@ function ConnectDatabaseModal({
         user,
         password,
         database,
+        // Only engines with a namespace inside the database can use this; for
+        // MySQL the database *is* the schema, so the field is not shown and
+        // anything typed before switching engines is discarded rather than sent.
+        dbSchema: supportsSchema ? dbSchema : "",
         port: port.trim() ? Number(port) : null,
       };
       if (editing) {
@@ -4407,6 +4431,22 @@ function ConnectDatabaseModal({
               placeholder="testdb"
             />
           </div>
+          {supportsSchema && (
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">
+                Schema <span className="text-muted-foreground/70">(optional)</span>
+              </label>
+              <Input
+                value={dbSchema}
+                onChange={(e) => setDbSchema(e.target.value)}
+                placeholder="Leave blank to use the connection's search path"
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Set this if your tables live outside the default schema. Blank is not the same as
+                “public” — it follows whatever the database user's search path resolves to.
+              </p>
+            </div>
+          )}
         </div>
         {error && <p className="text-xs text-destructive">{error}</p>}
         <DialogFooter>

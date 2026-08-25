@@ -122,13 +122,28 @@ key: the rows are intact, the key that vouched for them is gone. Rotation
 deliberately does *not* re-sign audit rows — a rotation tool that could re-sign
 them is a tool that can forge them.
 
-**Deletion is not detected.** A per-row signature says nothing about how many rows
-there should be. A hash chain would catch it and was deliberately not built:
+**Deletion is reported as a question, not a verdict.** A per-row signature says
+nothing about how many rows there should be, so each row also carries `seq`, a
+number assigned by the database from a sequence. A missing value is visible without
+the application coordinating anything — which is what ruled out a hash chain:
 computing the previous row's hash at insert time means reading the tail inside the
-writing transaction, and two workers doing that concurrently fork the chain — so
-the verifier would report tampering on an honest system, and the first false alarm
-is what teaches everyone to ignore the next one. Closing it needs a
-database-assigned monotonic sequence; see `docs/ROADMAP.md`.
+writing transaction, and two workers doing that concurrently fork the chain, so the
+verifier would report tampering on an honest system.
+
+Three things to understand before acting on a reported gap:
+
+- **A rolled-back transaction consumes a sequence value** and leaves an identical
+  hole in a completely honest log. `verify_audit_log.py` prints gaps but does not
+  fail its exit code on them, because a check that goes red on healthy systems is a
+  check people learn to silence.
+- **The sequence value is not signed**, and cannot be — the database assigns it
+  after the signature is computed. Someone who can delete a row can renumber the
+  survivors; what that costs them is rewriting every later row instead of running
+  one `DELETE`, and it leaves the sequence counter ahead of the data, which the
+  verifier reports as a tail discrepancy.
+- **SQLite has no sequence.** Those rows are reported as *unsequenced* and gap
+  detection reports itself unavailable rather than clean. Production is PostgreSQL;
+  a development instance on SQLite gets signatures but not deletion detection.
 
 ### Rotating the at-rest encryption key
 

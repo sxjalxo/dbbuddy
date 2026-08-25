@@ -50,3 +50,19 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
+
+  redis:
+    # Not a database under test — the coordination store. Two workers only share
+    # an ERP concurrency ceiling, a session-revocation broadcast and a context
+    # invalidation if this is reachable, so the tests that prove those need a real
+    # server rather than a stub.
+    image: redis:7-alpine
+    ports:
+      # Host 6380 to avoid clashing with a local Redis on 6379. Point the tests
+      # at it with REDIS_PORT=6380, or REDIS_URL.
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20

@@ -249,12 +249,43 @@ def compute_schema_hash(schema: dict) -> str:
     return hashlib.md5(json.dumps(schema, sort_keys=True).encode()).hexdigest()
 
 
+def _schema_suffix(config: DBConfig) -> str:
+    """The selected schema as a key fragment, empty when none is selected.
+
+    Appended rather than inserted so a connection with no schema — every
+    connection that existed before schemas were supported — keeps exactly the key
+    it had, and an upgrade does not throw away every warm context and every
+    learned mapping for nothing.
+    """
+    schema = getattr(config, "db_schema", None)
+    return f"|{schema}" if schema else ""
+
+
 def _db_key(config: DBConfig) -> str:
-    return f"{config.host}|{config.database}|{config.engine}"
+    """Identity of the tables a connection can see.
+
+    The schema is part of it: with one selected, the same (host, database,
+    engine) names two different sets of tables, and a shared key would hand one
+    schema's connection pool and cached schema to the other.
+    """
+    return f"{config.host}|{config.database}|{config.engine}{_schema_suffix(config)}"
 
 
 def _ctx_key(config: DBConfig, schema_hash: str) -> str:
-    return f"{config.host}|{config.database}|{schema_hash}"
+    """Identity of one prepared context: a database, at one version of its schema.
+
+    Built by *extending* ``_db_key`` rather than by assembling its own fields.
+    That is load-bearing: ``invalidate()`` finds a database's contexts by prefix,
+    and the previous shape (``host|database|hash``) could never match the prefix
+    it looked for (``host|database|engine|``), so invalidation silently dropped
+    the pool and the schema cache and left the prepared context — the expensive
+    part, and the one holding the stale semantic layer — in place. With an
+    unchanged schema the next request recomputed the same hash and got the stale
+    object straight back.
+
+    The shape also now separates engines, which ``host|database`` alone did not.
+    """
+    return f"{_db_key(config)}|{schema_hash}"
 
 
 def _get_cache() -> Cache:
@@ -638,7 +669,12 @@ def rebuild(config: DBConfig) -> DBContext:
     # (a just-applied DDL change must be seen now, not up to the TTL later).
     with _lock:
         _schema_cache.pop(_db_key(config), None)
-    return get_context(config, rebuild=True)
+    ctx = get_context(config, rebuild=True)
+    # Published after the rebuild succeeds, not before: telling other workers to
+    # drop a good context and then failing to produce a replacement would leave
+    # every worker cold for nothing.
+    _publish_invalidation(config)
+    return ctx
 
 
 def record_query_latency(latency_ms: float, *, cold: bool) -> None:
@@ -710,15 +746,150 @@ def get_status(config: DBConfig) -> dict:
 
 
 def invalidate(config: DBConfig) -> None:
-    """Drop all cached contexts and the pool for a database."""
+    """Drop all cached contexts and the pool for a database.
+
+    Every schema version of that database goes, which is what the prefix scan is
+    for — ``_ctx_key`` extends ``_db_key`` with the schema hash precisely so this
+    works.
+    """
     with _lock:
-        prefix = _db_key(config) + "|"
-        for k in [k for k in _contexts if k.startswith(prefix)]:
+        db_key = _db_key(config)
+        prefix = db_key + "|"
+        for k in [k for k in _contexts if k == db_key or k.startswith(prefix)]:
             _contexts.pop(k, None)
-        _schema_cache.pop(_db_key(config), None)
-        pool = _pools.pop(_db_key(config), None)
+        _schema_cache.pop(db_key, None)
+        pool = _pools.pop(db_key, None)
         if pool is not None:
             pool.close()
+
+
+# ── Cross-worker invalidation ─────────────────────────────────────────────────
+#
+# A prepared context cannot be shared between workers: it holds a live connection
+# pool and a Chroma client handle, and neither survives serialization. What can
+# cross is the message that one is stale.
+#
+# Without it, "Analyze Schema" on one worker leaves every other worker answering
+# from the schema it prepared earlier, until something happens to rebuild each of
+# them independently — so the same question gets different answers depending on
+# which worker took the request.
+#
+# Same shape as the session-revocation broadcast in ``app_db/deps.py``, including
+# the reason it polls with a timeout instead of blocking on ``listen()``: the
+# shared client carries a short ``socket_timeout``, correct for request-path
+# commands and fatal to a subscriber that is supposed to sit idle.
+#
+# No Redis is a supported state, not a failure. Each worker then rebuilds on its
+# own next analyze, which is the behaviour that existed before this.
+
+INVALIDATION_CHANNEL = "dbbuddy:context-invalidate"
+
+_listener_started = False
+_listener_lock = threading.Lock()
+
+
+def _invalidation_channel():
+    """The Redis client to publish/subscribe on, or None when unavailable."""
+    try:
+        cache = _get_cache()
+        if cache is None or getattr(cache, "client", None) is None:
+            return None
+        return cache.client
+    except Exception:                           # noqa: BLE001
+        return None
+
+
+def _publish_invalidation(config: DBConfig) -> None:
+    """Tell other workers this database's context is stale. Best effort.
+
+    A rebuild that succeeded locally must not be reported as failed because the
+    broadcast did not go out — the cost of a missed message is the pre-existing
+    behaviour, not a broken rebuild.
+    """
+    client = _invalidation_channel()
+    if client is None:
+        return
+    try:
+        client.publish(INVALIDATION_CHANNEL, _db_key(config))
+    except Exception:                           # noqa: BLE001
+        logger.debug("could not broadcast context invalidation", exc_info=True)
+
+
+def _apply_remote_invalidation(db_key) -> None:
+    """Drop the contexts for a database because another worker rebuilt it.
+
+    Tolerant of anything arriving on the channel: a pub/sub topic is not a trusted
+    schema, and a malformed message must not take down the listener thread that
+    every other invalidation depends on.
+    """
+    if not isinstance(db_key, str) or not db_key:
+        return
+    with _lock:
+        prefix = db_key + "|"
+        for k in [k for k in _contexts if k == db_key or k.startswith(prefix)]:
+            _contexts.pop(k, None)
+        _schema_cache.pop(db_key, None)
+        pool = _pools.pop(db_key, None)
+    # Closed outside the lock: a pool close waits on sockets, and holding the
+    # store's lock through that would stall every other database's requests.
+    if pool is not None:
+        try:
+            pool.close()
+        except Exception:                       # noqa: BLE001
+            logger.debug("could not close pool for %s", db_key, exc_info=True)
+
+
+def _listen_for_invalidations(pubsub) -> None:
+    """Poll the channel forever, surviving idle timeouts and reconnects."""
+    while True:
+        try:
+            message = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+        except TimeoutError:
+            continue                            # idle: the normal case
+        except Exception:                       # noqa: BLE001
+            logger.debug("context listener hiccuped; retrying", exc_info=True)
+            time.sleep(1.0)
+            continue
+
+        if not message:
+            continue
+        try:
+            data = message.get("data")
+            if isinstance(data, bytes):
+                data = data.decode("utf-8", "replace")
+            _apply_remote_invalidation(data)
+        except Exception:                       # noqa: BLE001
+            logger.debug("context listener ignored a bad message", exc_info=True)
+
+
+def start_context_listener() -> bool:
+    """Subscribe this worker to context invalidations. Returns whether listening.
+
+    Called once at startup. Idempotent, and a no-op without Redis.
+    """
+    global _listener_started
+    with _listener_lock:
+        if _listener_started:
+            return True
+        client = _invalidation_channel()
+        if client is None:
+            return False
+        try:
+            pubsub = client.pubsub(ignore_subscribe_messages=True)
+            pubsub.subscribe(INVALIDATION_CHANNEL)
+        except Exception:                       # noqa: BLE001
+            logger.warning("could not subscribe to context invalidations; each worker "
+                           "will rebuild on its own next analyze instead", exc_info=True)
+            return False
+
+        thread = threading.Thread(
+            target=_listen_for_invalidations, args=(pubsub,),
+            name="context-invalidation-listener", daemon=True,
+        )
+        thread.start()
+        _listener_started = True
+        logger.info("listening for cross-worker context invalidations")
+        return True
 
 
 def reset() -> None:

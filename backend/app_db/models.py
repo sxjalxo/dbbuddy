@@ -10,7 +10,8 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Boolean, DateTime, ForeignKey, Integer, JSON, String, Table, Column, Text, UniqueConstraint,
+    BigInteger, Boolean, DateTime, FetchedValue, ForeignKey, Integer, JSON, String, Table,
+    Column, Text, UniqueConstraint,
     false as sa_false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -247,6 +248,11 @@ class DatabaseConnection(Base):
     username: Mapped[str] = mapped_column(String(255), nullable=False)
     password_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     database: Mapped[str] = mapped_column(String(255), nullable=False)
+    # A namespace *within* the database — PostgreSQL's schema, SQL Server's. NULL
+    # means "follow the connection's search path", which is not the same as
+    # "public": a role that already selects its schema must keep working, and
+    # defaulting to public here would override it.
+    db_schema: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -347,6 +353,14 @@ class AuditLog(Base):
     # app_db/audit_integrity.py. Nullable because rows written before signing
     # existed have none; the verifier reports those rather than passing them.
     entry_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Database-assigned monotonic counter, so a *deleted* row leaves a visible
+    # hole — a per-row signature cannot say how many rows there should be.
+    # ``FetchedValue`` means the application never supplies it: PostgreSQL fills
+    # it from a sequence, and on an engine without one it stays NULL and the
+    # verifier reports gap detection as unavailable rather than clean.
+    seq: Mapped[int | None] = mapped_column(
+        BigInteger, FetchedValue(), nullable=True, index=True,
+    )
 
 
 # ── Background jobs (Milestone 6) ─────────────────────────────────────────────

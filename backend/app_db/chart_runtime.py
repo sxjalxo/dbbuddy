@@ -104,6 +104,7 @@ class ChartJob:
     host: str | None = None
     port: int | None = None
     database: str | None = None
+    db_schema: str | None = None
     username: str | None = None
     password: str | None = None
 
@@ -166,7 +167,9 @@ def _cache_key(job: ChartJob) -> str:
     """
     blob = "\x1f".join([
         str(job.organization_id), str(job.engine), str(job.host), str(job.port),
-        str(job.database), str(job.username), job.sql,
+        # The schema is part of the target: the same SQL against the same
+        # database reads different tables under a different search path.
+        str(job.database), str(job.db_schema), str(job.username), job.sql,
     ])
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -238,13 +241,18 @@ def execute_chart(job: ChartJob, *, use_cache: bool = True,
         # down. Beyond the per-target ceiling this waits, then gives up cleanly.
         with query_slot(job.engine, job.host, job.port, job.database):
             conn = connect_db(job.host, job.username, job.password, job.database,
-                              engine=job.engine, port=job.port)
+                              engine=job.engine, port=job.port,
+                              db_schema=job.db_schema)
             if conn is None:
                 raise RuntimeError("connection failed")
             try:
                 conn.autocommit = True  # fresh read, no lingering snapshot
-            except Exception:
-                pass
+            except Exception:                   # noqa: BLE001
+                # Harmless here — charts only read, so nothing is left unpersisted.
+                # Logged anyway: the same silent swallow on the write path hid a
+                # PostgreSQL data-loss bug for as long as it was silent.
+                logger.warning("Could not enable autocommit for chart %s; the read may "
+                               "run in a longer-lived snapshot.", job.chart_id, exc_info=True)
             try:
                 results = execute_query(conn, job.sql)
             finally:

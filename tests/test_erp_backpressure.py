@@ -173,12 +173,21 @@ class _FakeCursor:
 
 
 class _FakeConn:
+    # autocommit/commit are part of every DBAPI connection, and the PostgreSQL
+    # dialect commits the SET it issues — leaving that transaction open is what
+    # made `conn.autocommit = True` raise afterwards and a write vanish on close.
+    # A double without them would let that regress unnoticed.
     def __init__(self, fail=False):
         self.statements = []
         self._fail = fail
+        self.autocommit = False
+        self.commits = 0
 
     def cursor(self, *a, **k):
         return _FakeCursor(self.statements, self._fail)
+
+    def commit(self):
+        self.commits += 1
 
 
 @pytest.mark.parametrize("engine,needle", [
@@ -191,6 +200,25 @@ def test_dialect_sets_a_statement_timeout_in_milliseconds(engine, needle):
     sql, params = conn.statements[0]
     assert needle in sql
     assert params == (30_000,)  # seconds → milliseconds
+
+
+def test_postgres_leaves_no_open_transaction_behind():
+    # psycopg2 opens a transaction for the SET. Left open, the next thing every
+    # caller does — conn.autocommit = True — raises "set_session cannot be used
+    # inside a transaction", and on the write path that exception was swallowed:
+    # the statement ran in a transaction nobody committed and was discarded when
+    # the connection closed, while /execute reported the rows as affected.
+    conn = _FakeConn()
+    get_dialect("postgresql").apply_statement_timeout(conn, 30)
+    assert conn.commits == 1
+
+
+def test_postgres_does_not_commit_when_already_in_autocommit():
+    # Nothing to commit, and psycopg2 rejects an explicit commit in that mode.
+    conn = _FakeConn()
+    conn.autocommit = True
+    get_dialect("postgresql").apply_statement_timeout(conn, 30)
+    assert conn.commits == 0
 
 
 @pytest.mark.parametrize("engine", ["mysql", "postgresql"])

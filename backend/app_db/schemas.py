@@ -215,6 +215,10 @@ class ConnectionIn(SanitizedModel):
     username: str = Field(max_length=255)
     password: str
     database: str = Field(max_length=255)
+    # Optional namespace within the database (PostgreSQL/SQL Server schema).
+    # Omitted or blank means "follow the connection's search path" — see
+    # DatabaseConnection.db_schema.
+    db_schema: str | None = Field(default=None, max_length=255)
 
 
 class ConnectionUpdate(SanitizedModel):
@@ -228,6 +232,10 @@ class ConnectionUpdate(SanitizedModel):
     username: str | None = Field(default=None, max_length=255)
     password: str | None = None
     database: str | None = Field(default=None, max_length=255)
+    # Unlike the others, an *empty* value here is meaningful: it clears the
+    # schema back to "follow the search path". The router distinguishes omitted
+    # (leave alone) from blank (clear).
+    db_schema: str | None = Field(default=None, max_length=255)
 
 
 class ConnectionOut(BaseModel):
@@ -239,6 +247,7 @@ class ConnectionOut(BaseModel):
     port: int | None
     username: str
     database: str
+    db_schema: str | None = None
     created_at: datetime
     # password is intentionally never returned. ``credentials_ok`` is False when
     # the stored password can no longer be decrypted (the at-rest key changed) —
