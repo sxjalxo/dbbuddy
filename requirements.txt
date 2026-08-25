@@ -112,7 +112,7 @@ httpx>=0.27.0               # required by fastapi.testclient.TestClient
 # class of bug the dogfood `run.py --shuffle` hunts for at the query layer). Run
 # `pytest --random-order` in CI; a consistently green random-order run is the
 # evidence there is no cross-test state leakage.
-pytest-random-order>=1.1.1   # installed; sweep ONE seed per session, not many
+pytest-random-order>=1.2.0   # installed; sweep ONE seed per session, not many
 # Decompresses MySQL-Shell dump data (`.tsv.zst`). Required by the `airportdb`
 # dogfood dataset, which streams 55M rows out of Oracle's published dump.
 # Dev/dogfood-only — not a runtime dep.
