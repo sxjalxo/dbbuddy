@@ -247,8 +247,12 @@ def execute_chart(job: ChartJob, *, use_cache: bool = True,
                 raise RuntimeError("connection failed")
             try:
                 conn.autocommit = True  # fresh read, no lingering snapshot
-            except Exception:
-                pass
+            except Exception:                   # noqa: BLE001
+                # Harmless here — charts only read, so nothing is left unpersisted.
+                # Logged anyway: the same silent swallow on the write path hid a
+                # PostgreSQL data-loss bug for as long as it was silent.
+                logger.warning("Could not enable autocommit for chart %s; the read may "
+                               "run in a longer-lived snapshot.", job.chart_id, exc_info=True)
             try:
                 results = execute_query(conn, job.sql)
             finally:

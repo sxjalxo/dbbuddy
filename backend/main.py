@@ -646,13 +646,24 @@ def execute(req: ExecuteRequest, payload: dict = Depends(require_token_permissio
 
             # Enable autocommit to prevent lock timeouts on write queries.
             # Each statement is its own transaction — no lingering locks.
+            autocommit = False
             try:
                 conn.autocommit = True
-            except Exception:
-                pass
+                autocommit = True
+            except Exception:                   # noqa: BLE001
+                # Logged, never swallowed silently. This call raising is exactly
+                # how a PostgreSQL write came to be reported as applied while the
+                # transaction it ran in was discarded on close.
+                logger.warning("Could not enable autocommit for %s; the write will be "
+                               "committed explicitly instead.", engine, exc_info=True)
 
             try:
                 results = run_query(conn, sql)
+                # Only when autocommit is off, and only for a statement that
+                # changed something: with autocommit on the statement is already
+                # its own transaction, and a read has nothing to persist.
+                if not autocommit and results and "rows_affected" in results[0]:
+                    conn.commit()
             finally:
                 # Always close the connection after execution to release all locks.
                 try:

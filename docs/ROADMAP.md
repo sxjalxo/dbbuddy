@@ -212,7 +212,21 @@ rather than a schema to work around it.
   key, the learned-mapping scope, and the chart result cache. Without that, two schemas in one
   database share a connection pool, a vector index, and each other's cached rows. The
   concurrency ceiling deliberately stays per *server*: two schemas are still one machine.
-- [ ] The same question needs asking of the SQL Server dialect and its `dbo` assumption.
+- [x] The same question asked of the SQL Server dialect — and the answer was worse than a
+  `dbo` assumption. Introspection was scoped to **no** schema, so `sales.orders` and
+  `hr.orders` collapsed into one `orders` whose column list was both tables' columns
+  concatenated; the planner would then join on a column belonging to the other table.
+  Every `INFORMATION_SCHEMA` query is now scoped to `SCHEMA_NAME()` — the connecting
+  user's own default schema, not the literal `dbo`, which would repeat PostgreSQL's
+  hardcoded-`public` mistake. The foreign-key join is scoped on both sides, because a
+  constraint name is unique per schema rather than per database.
+
+  A requested `db_schema` that is not the session's schema is **refused** with an
+  actionable message rather than half-honoured. T-SQL has no `search_path`: a user's
+  default schema is DDL, so introspecting one schema while unqualified names resolve to
+  another is exactly the drift the PostgreSQL fix exists to prevent. Pointing at an
+  arbitrary schema needs schema-qualified identifier emission, which touches the AST, the
+  compiler and the validator — its own item, not a bullet.
 
 ### Semantic-layer correction
 The engine already learns mappings. It cannot yet be *told* it is wrong.
