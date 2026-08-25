@@ -2,7 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Both names on purpose: the repository's default branch is `master`, while
+    # every doc link and CONTRIBUTING already say `main`. Listing both means the
+    # push build runs today and keeps running through a rename, instead of
+    # silently matching nothing the way `[main]` alone did.
+    branches: [main, master]
   pull_request:
   workflow_dispatch:
 

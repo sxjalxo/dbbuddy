@@ -1,0 +1,10 @@
+# Every path needs maintainer review before merge.
+# Referenced by the "Default branch protection" ruleset
+# (pull_request.require_code_owner_review).
+
+*       @sxjalxo
+
+# Anything that can weaken the protections themselves.
+/.github/            @sxjalxo
+/.github/workflows/  @sxjalxo
+/.github/rulesets/   @sxjalxo
