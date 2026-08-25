@@ -63,3 +63,19 @@ line-length = 100
 [tool.isort]
 profile = "black"
 line_length = 100
+
+[tool.ruff]
+# Explicit on purpose. With no configuration, ruff lints against whatever its
+# current default rule set happens to be, and that set grows between releases —
+# 0.15 checked pyflakes plus a slice of pycodestyle and found nothing here, while
+# 0.16 widened the defaults to pyupgrade/bugbear/isort/simplify and reported 1469
+# findings on unchanged code. Pinning the rules here means a ruff upgrade changes
+# CI only when we decide it should.
+line-length = 100          # matches [tool.black]
+target-version = "py310"   # the floor in requires-python
+
+[tool.ruff.lint]
+# The rules the codebase satisfies today: pyflakes (F) plus the pycodestyle
+# subsets for imports (E4), statements (E7), and syntax/IO errors (E9).
+# Widening this is a deliberate cleanup, not a CI upgrade — see the note above.
+select = ["E4", "E7", "E9", "F"]

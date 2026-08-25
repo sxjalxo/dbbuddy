@@ -28,7 +28,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install ruff
+      # Pinned. An unpinned `pip install ruff` means an upstream release can turn
+      # this job red on code nobody touched, which is what happened at 0.16.0.
+      # Bump it deliberately, with whatever fixes the new version asks for.
+      - run: pip install ruff==0.16.4
       - run: ruff check .
 
   test:
