@@ -43,18 +43,28 @@ _EMPTY_SCOPE = {"mappings": {}, "column_usage": {}, "table_usage": {}}
 def memory_scope(config) -> str:
     """Stable identity of the database a mapping was learned from.
 
-    Host + database + engine, matching ``context_store._db_key``. Deliberately
-    **not** the schema hash: a learned term should survive an ALTER TABLE, and
-    re-learning everything on each schema change would make the memory useless.
+    Host + database + engine + the selected schema, matching
+    ``context_store._db_key``. Deliberately **not** the schema *hash*: a learned
+    term should survive an ALTER TABLE, and re-learning everything on each schema
+    change would make the memory useless.
+
+    The selected schema is a different matter — ``sales.amount`` and
+    ``warehouse.amount`` are different columns, so a mapping learned against one
+    must not be applied to the other. Absent (the default, and every connection
+    that predates schema support) the scope is unchanged, so existing memory
+    files keep their identity.
     """
     if config is None:
         return DEFAULT_SCOPE
     host = getattr(config, "host", "") or ""
     database = getattr(config, "database", "") or ""
     engine = getattr(config, "engine", "") or ""
+    schema = getattr(config, "db_schema", "") or ""
     if not (host or database):
         return DEFAULT_SCOPE
-    return f"{host}|{database}|{engine}".lower()
+    # Appended, so a connection with no schema keeps the scope it already has.
+    suffix = f"|{schema}" if schema else ""
+    return f"{host}|{database}|{engine}{suffix}".lower()
 
 
 def _blank_memory() -> Dict[str, Any]:

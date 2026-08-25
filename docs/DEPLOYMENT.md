@@ -99,7 +99,9 @@ Set these in the backend's environment (e.g. a systemd unit, container env, or a
 | `DASHBOARD_CACHE_TTL_SECONDS` | No | Lifetime of a cached chart result when a dashboard is opened (default `45`). Short by design: long enough to absorb a burst of clients opening the same dashboard, short enough that "as of a moment ago" stays true. Each chart reports its own `fetched_at`, and Refresh always bypasses the cache. |
 | `DASHBOARD_MAX_PARALLEL_QUERIES` | No | How many of a dashboard's charts may query concurrently (default `6`). Bounded so one wide dashboard cannot open dozens of simultaneous connections to a target database. |
 | `ERP_STATEMENT_TIMEOUT` | **Recommended** | Wall-clock ceiling (seconds, default `60`) on any single statement against a target database, applied per connection. Without it a lock wait or a huge scan holds a worker and a pool slot indefinitely. PostgreSQL/MySQL enforce it server-side; **SQL Server has no session equivalent and is not covered**. `0` disables. |
-| `ERP_MAX_CONCURRENT_QUERIES` | **Recommended** | Backpressure: concurrent queries allowed against any one target database (default `10`). Protects connected business databases from DB Buddy's own popularity. **Per process** — with N workers the effective ceiling is N×, so set this to `desired_total / worker_count`. |
+| `ERP_MAX_CONCURRENT_QUERIES` | **Recommended** | Backpressure: concurrent queries allowed against any one target database (default `10`). Protects connected business databases from DB Buddy's own popularity. **Global when Redis is reachable** — do not divide it by your worker count. Without Redis it degrades to a per-process ceiling, so N workers allow N× (bounded, never unlimited). See §8b. |
+| `ERP_SLOT_LEASE_SECONDS` | No | How long a concurrency slot stays claimed when `ERP_STATEMENT_TIMEOUT` is disabled (default `300`). Only consulted in that case; otherwise the lease is the statement timeout plus 30 s. A query outliving its lease has its slot reclaimed while still running. |
+| `DBBUDDY_WORKERS` | **Required if multi-worker** | How many worker processes are running (default `1`). A worker cannot detect its siblings, so this is declared. Supersedes `LOGIN_GUARD_WORKERS`, which still works as an alias. Reported at startup and from `GET /runtime-profile`. |
 | `ERP_QUEUE_TIMEOUT` | No | How long a query waits for a concurrency slot before failing with "busy" (default `20` s), surfaced as `503` + `Retry-After`. Bounded so a saturated target surfaces as an error, not a hung worker. |
 | `AI_PROVIDER_BLOCK_PRIVATE_NETWORKS` | **Required for hosted/multi-tenant** | Set to `1` to refuse AI-provider `base_url`s resolving to loopback or RFC1918 addresses. Off by default because the normal deployment runs Ollama on `localhost` and self-hosted models on the LAN — turn it on wherever a tenant admin is untrusted relative to the server's network. Cloud instance metadata (link-local, `169.254.169.254`) is refused **regardless** of this setting. |
 | `LOGIN_GUARD_WORKERS` | **Required if multi-worker** | Your uvicorn worker count (default `1`). The login/registration throttle is a **shared Redis sliding window**, so the configured limit holds at any scale. This value is consulted only while Redis is unreachable: the fallback in-process cap is divided by it, so N workers each allowing `cap/N` stay near the intended global limit rather than N times it. Set it wrong (too low) and logins throttle early during a Redis outage; leave it at `1` on a multi-worker box and the degraded path allows N× the attempts. |
@@ -270,6 +272,60 @@ Reports viewer).
 
 ---
 
+## 8b. Running more than one worker
+
+A worker process cannot see its siblings — nothing in the runtime knows how many
+others exist — so **declare the count**:
+
+```
+DBBUDDY_WORKERS=4
+```
+
+`LOGIN_GUARD_WORKERS` is the old name for the same thing and still works.
+
+At startup the backend logs the resolved profile: how many workers, whether the
+shared store is reachable, and for each subsystem whether it is shared or
+per-worker. The same structure is served from `GET /runtime-profile`
+(authenticated; it is deliberately not on the public health endpoint, because
+telling an anonymous caller that Redis is down also tells them the login throttle
+is on its weaker fallback). **A misconfiguration is never a startup failure** — a
+container that refuses to boot because a cache is down turns a Redis blip during a
+rolling restart into a total outage.
+
+### What is shared, and what is not
+
+| Subsystem | With Redis | Without Redis |
+|---|---|---|
+| ERP concurrency ceiling | **Shared.** `ERP_MAX_CONCURRENT_QUERIES` is the real global limit. | Per worker: a target database sees up to N × the limit. |
+| Session revocation | Broadcast; other workers drop the entry in ~40 ms. | Each worker converges within `AUTH_REVOCATION_CACHE_TTL`. |
+| Login throttle | Shared sliding window. | Per worker, cap divided by `DBBUDDY_WORKERS`. |
+| Prepared schema contexts | **Per worker**, with invalidation broadcast: a rebuild on one worker drops the others' copies. | Per worker, and each rebuilds only on its own next analyze. |
+| Scheduler | Not a Redis question. One worker must own it: set `DBBUDDY_DISABLE_SCHEDULER=1` on the others. | Same. |
+
+Prepared contexts never become "shared", and that is not a gap waiting to be
+closed. One holds a live connection pool and a Chroma client handle; neither
+survives serialization. What crosses workers is the message that a context is
+stale.
+
+### The ERP ceiling
+
+With Redis, the count lives in a sorted set per target and `ERP_MAX_CONCURRENT_QUERIES`
+means what it says at any worker count — **do not divide it by your worker count
+any more**. Without Redis it falls back to a per-process semaphore, which is N ×
+the limit rather than unlimited; that fallback is deliberate, because failing open
+here would mean unbounded concurrent queries against a customer's production
+database at the moment our own cache is already unhealthy.
+
+Each holder's slot carries a lease so a worker that dies mid-query does not remove
+a slot permanently. The lease is `ERP_STATEMENT_TIMEOUT + 30s`, because that
+timeout is what guarantees the query cannot outlive it. **With
+`ERP_STATEMENT_TIMEOUT=0` there is no such guarantee**: the lease falls back to
+`ERP_SLOT_LEASE_SECONDS` (default 300), and a query running longer than that has
+its slot reclaimed while still executing — real over-admission, and one more reason
+the statement timeout is marked Recommended.
+
+---
+
 ## 9. Background jobs — operational notes
 
 - The scheduler is **in-process (APScheduler)** — no external broker (Celery/
@@ -289,7 +345,7 @@ Reports viewer).
 
 - [ ] Set `DBBUDDY_ENV=production` — this turns the checks below into hard startup errors (fail-fast) instead of dev-only warnings.
 - [ ] `JWT_SECRET` (≥ 32 bytes) and `APP_SECRET_KEY` set to strong secrets (store in a secrets manager). A short `JWT_SECRET` now aborts startup. `APP_SECRET_KEY` no longer has to be permanent — see the rotation procedure — but changing it without following that procedure still destroys every stored secret.
-- [ ] Redis reachable if running more than one worker: session revocation is broadcast over it, and without it each worker converges on its own `AUTH_REVOCATION_CACHE_TTL` instead.
+- [ ] Redis reachable if running more than one worker, and `DBBUDDY_WORKERS` set to the real count. Without Redis the ERP concurrency ceiling applies per worker (N× the load on a customer's database), session revocation converges on `AUTH_REVOCATION_CACHE_TTL`, and each worker keeps its own prepared contexts. Check `GET /runtime-profile` after deploying — it reports exactly this. See §8b.
 - [ ] `python scripts/verify_audit_log.py` scheduled, so audit tampering is noticed rather than discovered.
 - [ ] Decide on `REQUIRE_EMAIL_VERIFICATION` and configure `SMTP_HOST`, or password reset mail is only written to the log.
 - [ ] `APP_DATABASE_URL` points to **PostgreSQL**, not SQLite.

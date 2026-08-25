@@ -134,8 +134,8 @@ def main() -> int:
                     help="where the dataset runs. sqlite (default) is fast and needs no "
                          "server but cannot grade the SQL itself; postgres copies the "
                          "dataset into a real server and rewrites nothing. Connection "
-                         "from DOGFOOD_PG_* env vars. Use it for shape, not scale — the "
-                         "copy is row-by-row.")
+                         "from DOGFOOD_PG_* env vars. The copy streams through COPY, so "
+                         "the large datasets are in scope too.")
     ap.add_argument("--rebuild", action="store_true", help="regenerate the dataset")
     ap.add_argument("--suite", nargs="+", help="run only these suites")
     ap.add_argument("-v", "--verbose", action="store_true", help="print every probe")

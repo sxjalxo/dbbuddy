@@ -43,6 +43,10 @@ jobs:
       - name: Run integration tests
         # Host ports and credentials come from docker-compose.test.yml; the test
         # module's defaults already match them (MYSQL_PORT 3307, PG_PORT 5433).
+        # Redis is the exception: the compose file publishes it on 6380 to avoid
+        # clashing with a local Redis, while the test default is 6379.
+        env:
+          REDIS_PORT: "6380"
         run: pytest -m integration -q
 
       - name: Database logs on failure
@@ -68,9 +72,10 @@ jobs:
     # emitted unquoted (PostgreSQL folds them and the relation is not found), and
     # SUM over a text column.
     #
-    # Generated datasets only. The copy is row-by-row, which is fine for these and
-    # unreasonable for `employees` (~4M rows) or `airportdb` (up to ~59M) — those
-    # stay on SQLite, where scale is the point.
+    # Generated datasets only — not because of the loader (rows stream in through
+    # COPY now, so scale is no longer the obstacle) but because `employees` and
+    # `airportdb` are built from large gitignored dumps that this job has no copy
+    # of.
     services:
       postgres:
         image: postgres:16

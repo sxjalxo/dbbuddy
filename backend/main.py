@@ -1,7 +1,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,6 +44,19 @@ async def lifespan(_app: FastAPI):
     from app_db.deps import start_revocation_listener
 
     start_revocation_listener()
+
+    # Same shape, different staleness: an "Analyze Schema" on one worker leaves
+    # every other worker answering from the schema it prepared earlier, so the
+    # same question gets different answers depending on which worker took the
+    # request. Also a no-op without Redis.
+    from dbbuddy_core.context_store import start_context_listener
+
+    start_context_listener()
+
+    # Log what is shared and what is not, before anything serves traffic.
+    from app_db.profile import log_profile
+
+    log_profile()
 
     scheduler = None
     if os.getenv("DBBUDDY_DISABLE_SCHEDULER") != "1":
@@ -192,6 +205,10 @@ app.include_router(dashboards_router.router)
 # save). The inline fields are optional so connection_id-only requests validate.
 class AnalyzeRequest(BaseModel):
     connection_id: str | None = None
+    # A namespace within the database, for engines that have one. Only
+    # meaningful on the inline-credential path; a saved connection carries
+    # its own. Omitted means "follow the connection's search path".
+    db_schema: str | None = None
     host: str = ""
     user: str = ""
     password: str = ""
@@ -204,6 +221,10 @@ class AnalyzeRequest(BaseModel):
 
 class QueryRequest(BaseModel):
     connection_id: str | None = None
+    # A namespace within the database, for engines that have one. Only
+    # meaningful on the inline-credential path; a saved connection carries
+    # its own. Omitted means "follow the connection's search path".
+    db_schema: str | None = None
     host: str = ""
     user: str = ""
     password: str = ""
@@ -220,6 +241,10 @@ class QueryRequest(BaseModel):
 
 class ExecuteRequest(BaseModel):
     connection_id: str | None = None
+    # A namespace within the database, for engines that have one. Only
+    # meaningful on the inline-credential path; a saved connection carries
+    # its own. Omitted means "follow the connection's search path".
+    db_schema: str | None = None
     host: str = ""
     user: str = ""
     password: str = ""
@@ -371,8 +396,25 @@ def _issue_execution_token(payload: dict, req, result: dict, *, engine, host, po
         logger.warning("Failed to mint execution token for held query", exc_info=True)
 
 
-def _resolve_connection(req, payload: dict):
-    """Resolve (host, user, password, database, engine, port) for a query request.
+class ResolvedConnection(NamedTuple):
+    """Where a request's query is going, and as whom.
+
+    A NamedTuple rather than a plain tuple because ``db_schema`` was added to it
+    after five call sites already existed. Positional unpacking would have made
+    a missed site a silent wrong-length bug at one of them; attribute access
+    makes every site name what it uses.
+    """
+    host: str
+    user: str
+    password: str
+    database: str
+    engine: str
+    port: int | None
+    db_schema: str | None
+
+
+def _resolve_connection(req, payload: dict) -> "ResolvedConnection":
+    """Resolve where a query request should connect, and as whom.
 
     Auth and permission are enforced by the calling endpoint's dependency
     (``require_token_permission``), so both the inline-credential and saved
@@ -385,7 +427,10 @@ def _resolve_connection(req, payload: dict):
     """
     conn_id = getattr(req, "connection_id", None)
     if not conn_id:
-        return req.host, req.user, req.password, req.database, str(req.engine), getattr(req, "port", None)
+        return ResolvedConnection(
+            req.host, req.user, req.password, req.database, str(req.engine),
+            getattr(req, "port", None), getattr(req, "db_schema", None) or None,
+        )
 
     from cryptography.fernet import InvalidToken
 
@@ -415,9 +460,9 @@ def _resolve_connection(req, payload: dict):
                     "stable APP_SECRET_KEY so this does not recur across restarts."
                 ),
             ) from exc
-        return (
+        return ResolvedConnection(
             conn.host, conn.username, password,
-            conn.database, conn.engine, conn.port,
+            conn.database, conn.engine, conn.port, conn.db_schema,
         )
 
 
@@ -437,10 +482,18 @@ def health_check():
 @app.post("/analyze", dependencies=[Depends(rate_limit("analyze", ANALYZE_BUDGET))])
 def analyze(req: AnalyzeRequest, payload: dict = Depends(require_token_permission("schema:analyze"))):
     try:
-        host, user, password, database, engine, port = _resolve_connection(req, payload)
+        target = _resolve_connection(req, payload)
+        host = target.host
+        user = target.user
+        password = target.password
+        database = target.database
+        engine = target.engine
+        port = target.port
+        db_schema = target.db_schema
         config = DBConfig(
             host=host, user=user, password=password, database=database,
-            port=port, engine=engine, ai=req.ai, ai_provider=req.ai_provider,
+            port=port, engine=engine, db_schema=db_schema, ai=req.ai,
+            ai_provider=req.ai_provider,
             ai_provider_chain=_resolve_ai_chain(payload),
         )
         return process_schema(config)
@@ -458,10 +511,18 @@ def analyze(req: AnalyzeRequest, payload: dict = Depends(require_token_permissio
 @app.post("/query", dependencies=[Depends(rate_limit("query", QUERY_BUDGET))])
 def query(req: QueryRequest, payload: dict = Depends(require_token_permission("query:run"))):
     try:
-        host, user, password, database, engine, port = _resolve_connection(req, payload)
+        target = _resolve_connection(req, payload)
+        host = target.host
+        user = target.user
+        password = target.password
+        database = target.database
+        engine = target.engine
+        port = target.port
+        db_schema = target.db_schema
         config = DBConfig(
             host=host, user=user, password=password, database=database,
-            port=port, engine=engine, ai=req.ai, ai_provider=req.ai_provider,
+            port=port, engine=engine, db_schema=db_schema, ai=req.ai,
+            ai_provider=req.ai_provider,
             ai_provider_chain=_resolve_ai_chain(payload),
         )
         # ``user_id`` is what keys the engine's rate limiter. Without it every
@@ -556,7 +617,14 @@ def execute(req: ExecuteRequest, payload: dict = Depends(require_token_permissio
         from dbbuddy_core.db import connect_db
         from dbbuddy_core.query import execute_query as run_query
 
-        host, user, password, database, engine, port = _resolve_connection(req, payload)
+        target = _resolve_connection(req, payload)
+        host = target.host
+        user = target.user
+        password = target.password
+        database = target.database
+        engine = target.engine
+        port = target.port
+        db_schema = target.db_schema
 
         # Determine the authoritative SQL (server-stored via token, or a
         # permission-checked raw statement) before touching the database.
@@ -571,7 +639,8 @@ def execute(req: ExecuteRequest, payload: dict = Depends(require_token_permissio
         from dbbuddy_core.erp_concurrency import query_slot
 
         with query_slot(engine, host, port, database):
-            conn = connect_db(host, user, password, database, engine=engine, port=port)
+            conn = connect_db(host, user, password, database, engine=engine, port=port,
+                              db_schema=db_schema)
             if conn is None:
                 raise DatabaseUnavailableError("Unable to connect to the database.")
 
@@ -631,10 +700,18 @@ def rebuild_context(req: AnalyzeRequest, payload: dict = Depends(require_token_p
     from dbbuddy_core import context_store
 
     try:
-        host, user, password, database, engine, port = _resolve_connection(req, payload)
+        target = _resolve_connection(req, payload)
+        host = target.host
+        user = target.user
+        password = target.password
+        database = target.database
+        engine = target.engine
+        port = target.port
+        db_schema = target.db_schema
         config = DBConfig(
             host=host, user=user, password=password, database=database,
-            port=port, engine=engine, ai=req.ai, ai_provider=req.ai_provider,
+            port=port, engine=engine, db_schema=db_schema, ai=req.ai,
+            ai_provider=req.ai_provider,
             ai_provider_chain=_resolve_ai_chain(payload),
         )
         context_store.rebuild(config)
@@ -659,10 +736,18 @@ def analyze_status(req: AnalyzeRequest, payload: dict = Depends(require_token_pe
     from dbbuddy_core import context_store
 
     try:
-        host, user, password, database, engine, port = _resolve_connection(req, payload)
+        target = _resolve_connection(req, payload)
+        host = target.host
+        user = target.user
+        password = target.password
+        database = target.database
+        engine = target.engine
+        port = target.port
+        db_schema = target.db_schema
         config = DBConfig(
             host=host, user=user, password=password, database=database,
-            port=port, engine=engine, ai=req.ai, ai_provider=req.ai_provider,
+            port=port, engine=engine, db_schema=db_schema, ai=req.ai,
+            ai_provider=req.ai_provider,
             ai_provider_chain=_resolve_ai_chain(payload),
         )
         return context_store.get_status(config)
@@ -689,6 +774,27 @@ def context_metrics(_: dict = Depends(get_token_payload)):
     from dbbuddy_core import context_store
 
     return context_store.get_metrics()
+
+
+@app.get("/runtime-profile")
+def runtime_profile(_: dict = Depends(require_token_permission("settings:ai"))):
+    """What this deployment shares between workers, and what it does not.
+
+    Authenticated on purpose. The same information on the public health endpoint
+    would tell an anonymous caller when Redis is down — and therefore when the
+    login throttle is running on its weaker per-process fallback.
+
+    ``occupancy`` is the live per-target concurrency picture from whichever
+    ceiling is currently authoritative.
+    """
+    from dbbuddy_core.erp_concurrency import backend_name, snapshot
+
+    from app_db.profile import resolve
+
+    profile = resolve()
+    profile["erp_backend"] = backend_name()
+    profile["occupancy"] = snapshot()
+    return profile
 
 
 @app.get("/ai-metrics")

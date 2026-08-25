@@ -62,8 +62,10 @@ whole of this milestone.
   nothing rewritten. `erp`, `hospital`, `legacy`, `tpch` and `tpcds` all pass; the matrix
   runs nightly. Its first run found two more defects — mixed-case identifiers emitted
   unquoted, and `SUM` over a text column.
-- [ ] The large imported datasets (`employees`, `airportdb`) stay SQLite-only: the copy is
-  row-by-row, so scale still lives on the shim. A `COPY`-based loader would fix that.
+- [x] The large imported datasets (`employees`, `airportdb`) are no longer SQLite-only. Rows
+  stream into PostgreSQL through `COPY … FROM STDIN` straight off the SQLite cursor, and the
+  primary keys and foreign keys are added *after* the data rather than maintained per row —
+  bounded memory and bulk-load speed, so scale and shape can be graded on the same engine.
 - [x] A compiled lock file (`requirements.lock`, `uv pip compile --universal`) alongside the
   version floors. CI still installs from the floors on purpose — resolving fresh is what
   catches an upstream release that breaks us.
@@ -200,9 +202,16 @@ rather than a schema to work around it.
   `public`, and accept a schema explicitly on the connection (`DBConfig.db_schema`,
   `dbbuddy … --schema`). Setting the session's search path rather than qualifying every
   identifier keeps discovery and execution on the same path, so they cannot drift apart.
-- [ ] **Platform plumbing.** The engine and CLI honour it; the web app does not yet — the
-  `DatabaseConnection` record has no schema column, so a hosted user still cannot point at
-  one. Migration + API field + a form input.
+- [x] **Platform plumbing.** `database_connections.db_schema` (migration `0019`), the field on
+  the connection API, and an optional Schema input in the connect/edit dialog — shown only for
+  the engines that have a namespace inside a database, since for MySQL the database *is* the
+  schema. NULL stays distinct from `"public"`: it means "follow the search path", so no
+  existing connection changes behaviour.
+  The half that makes it correct rather than merely stored: the schema is now part of every
+  identity key that used to treat a database as the finest granularity — the prepared-context
+  key, the learned-mapping scope, and the chart result cache. Without that, two schemas in one
+  database share a connection pool, a vector index, and each other's cached rows. The
+  concurrency ceiling deliberately stays per *server*: two schemas are still one machine.
 - [ ] The same question needs asking of the SQL Server dialect and its `dbo` assumption.
 
 ### Semantic-layer correction
@@ -235,8 +244,21 @@ load balancer therefore behave differently from one.
 - [x] **Session revocation** now broadcasts: the revoking worker publishes and every other
   drops its cached entry on receipt (~40 ms), instead of each converging on its own TTL.
   Falls back to the previous TTL behaviour without Redis.
-- [ ] The rest of the per-worker state — prepared DB contexts and the per-target concurrency
-  semaphore — still needs Redis or a formally supported "single worker" profile.
+- [x] **The per-target concurrency semaphore** is now counted in Redis: a sorted set of
+  leases per target, so `ERP_MAX_CONCURRENT_QUERIES` is a real global limit instead of a
+  per-process one that operators were told to divide by their worker count. Leases expire,
+  so a worker that dies mid-query does not shrink the ceiling permanently. Without Redis it
+  degrades to the per-process semaphore — never to unlimited, because failing open here
+  means an outage at a customer's site rather than ours.
+- [x] **Prepared contexts stay per worker, and that is the honest answer**: one holds a live
+  connection pool and a Chroma handle, neither serializable. What crosses workers is
+  invalidation — a rebuild broadcasts, and the others drop their copy. Closing this
+  uncovered that `invalidate()` never dropped a context at all: the prefix scan looked for
+  `host|database|engine|` while the keys were `host|database|hash`, so an unchanged schema
+  handed the stale context straight back.
+- [x] **A declared worker profile.** `DBBUDDY_WORKERS` (superseding `LOGIN_GUARD_WORKERS`,
+  kept as an alias), a startup log naming what is shared and what is not, and
+  `GET /runtime-profile`. It warns; it never refuses to boot.
 
 ### Pluggable vector backend
 Embedded Chroma writes to local disk, which makes any node holding it stateful and gives two
@@ -255,11 +277,19 @@ visible without any application-side coordination. A hash chain computed at inse
 would fork under concurrent workers and report tampering on an honest system,
 which is worse than no check at all.
 
-- [ ] A monotonic sequence column (PostgreSQL `SEQUENCE`; SQLite needs a different
-  mechanism, and gap detection can reasonably be Postgres-only)
-- [ ] Teach `scripts/verify_audit_log.py` to report gaps, flagged as *possible*
-  deletion — a rolled-back transaction also consumes a sequence value, so a gap is
-  a question, not a verdict
+- [x] A monotonic sequence column (migration `0020`). PostgreSQL gets a real `SEQUENCE`
+  owned by the column; SQLite gets the column and nothing to fill it, because an
+  application-assigned counter would reintroduce the coordination problem the hash chain
+  was rejected for. Existing rows are not back-filled — numbering them now would invent
+  an order nothing recorded.
+- [x] `scripts/verify_audit_log.py` reports gaps as *possible* deletion, never as a
+  finding, and does not fail the exit code on one: a rolled-back transaction consumes a
+  sequence value, and a check that goes red on healthy systems is one people silence. On
+  an engine with no sequence it reports detection as **unavailable** rather than clean.
+- [x] A tail check — the sequence's own `last_value` against the highest row. Closing a gap
+  by renumbering the survivors is possible (the sequence value is not signed, and cannot
+  be: the database assigns it after the signature is computed), but it leaves the counter
+  ahead of the data it numbered.
 
 ### Observability
 For a system whose selling point is its pipeline, the pipeline is currently invisible in

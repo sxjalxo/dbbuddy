@@ -106,6 +106,7 @@ def _execute_report(chart, conn_cfg, organization_id: str | None = None) -> Repo
         host=conn_cfg.host if conn_cfg else None,
         port=conn_cfg.port if conn_cfg else None,
         database=conn_cfg.database if conn_cfg else None,
+        db_schema=conn_cfg.db_schema if conn_cfg else None,
         username=conn_cfg.username if conn_cfg else None,
         password=password,
     )

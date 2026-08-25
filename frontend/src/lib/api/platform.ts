@@ -9,6 +9,9 @@ export type ApiConnection = {
   port: number | null;
   username: string;
   database: string;
+  // Namespace within the database (PostgreSQL/SQL Server schema). null means
+  // "follow the connection's search path", which is not the same as "public".
+  db_schema: string | null;
   created_at: string;
   // False when the stored password can no longer be decrypted (at-rest key
   // changed). The UI flags such a connection for password re-entry.
@@ -50,6 +53,7 @@ export const connectionsApi = {
     username: string;
     password: string;
     database: string;
+    db_schema?: string | null;
   }) => apiJson<ApiConnection>("/connections", { method: "POST", body: JSON.stringify(body) }),
   update: (
     id: string,
@@ -61,6 +65,7 @@ export const connectionsApi = {
       username: string;
       password: string;
       database: string;
+      db_schema: string | null;
     }>,
   ) =>
     apiJson<ApiConnection>(`/connections/${id}`, { method: "PATCH", body: JSON.stringify(body) }),

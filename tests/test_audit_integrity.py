@@ -199,10 +199,14 @@ def test_the_verifier_separates_unsigned_rows_from_failed_ones(tmp_path):
         db.add_all([good, edited, legacy])
         db.commit()
 
-    verified, unsigned, failures = check(session_factory=Session)
+    verified, unsigned, failures, sequence = check(session_factory=Session)
     assert verified == 1
     assert unsigned == 1
     assert [f.id for f in failures] == ["edited"]
+    # SQLite assigns no sequence value, so every row is unsequenced and gap
+    # detection reports itself unavailable rather than clean. See
+    # tests/test_audit_deletion_detection.py for the analysis itself.
+    assert sequence.unsequenced == 3 and sequence.present == 0
 
 
 def test_rows_written_through_write_audit_verify(tmp_path):
@@ -224,8 +228,9 @@ def test_rows_written_through_write_audit_verify(tmp_path):
                     entity_id="r1", detail={"title": "Q3"}, ip_address="10.0.0.1")
         db.commit()
 
-    verified, unsigned, failures = check(session_factory=Session)
+    verified, unsigned, failures, sequence = check(session_factory=Session)
     assert (verified, unsigned, failures) == (1, 0, [])
+    assert sequence.missing == 0
 
 
 def test_a_signature_survives_a_database_round_trip(tmp_path):
