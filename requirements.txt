@@ -47,7 +47,7 @@ pymssql>=2.2.0              # Microsoft SQL Server
 # Separate from customer ERP DBs: users, roles, orgs, connections, charts,
 # dashboards, audit. PostgreSQL in production, SQLite for local dev.
 
-sqlalchemy>=2.0.0
+sqlalchemy>=2.0.52
 alembic>=1.13.0
 argon2-cffi>=23.1.0         # password hashing
 pyjwt>=2.8.0                # access/refresh tokens
