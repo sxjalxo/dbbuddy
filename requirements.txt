@@ -58,7 +58,7 @@ pyotp>=2.9.0
 qrcode>=7.4.0
 
 # Background jobs: in-process scheduler (no external broker).
-apscheduler>=3.10.0
+apscheduler>=3.11.3
 
 # =========================
 # AI / LLM
