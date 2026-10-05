@@ -1018,9 +1018,18 @@ the idle pool becomes meaningful instead of a churn buffer.
 Callers see `503` + `Retry-After` for a saturated target, distinct from `502`
 (unreachable/broken) and `500` (our bug) — three different operator responses.
 
-**Per process**, like the rest of the runtime's shared state: with N workers the
-effective ceiling is N×; set `ERP_MAX_CONCURRENT_QUERIES` to
-`desired_total / worker_count`. A true global limit needs Redis — see
+**Global when Redis is reachable.** The count is a sorted set of expiring leases per
+target, so `ERP_MAX_CONCURRENT_QUERIES` is the real ceiling at any worker count and
+must *not* be divided down. Leases expire, so a worker that dies mid-query does not
+shrink the ceiling permanently. Admission adds its lease and then counts (`ZCARD`),
+rather than trusting its rank: lease scores come from `time.time()`, whose resolution
+on Windows is ~15 ms, so simultaneous acquirers tie and Redis breaks the tie by member
+— a random token — which let a late arrival sort to rank 0 while the current holders
+kept their slots.
+
+Without Redis it degrades to the per-process semaphore, so N workers allow N× the
+ceiling — bounded, never unlimited. Failing open here would mean an outage at a
+customer's site rather than ours. See
 [PRE_DEPLOYMENT_REVIEW.md](PRE_DEPLOYMENT_REVIEW.md).
 
 ### Request rate limiting
@@ -1041,7 +1050,7 @@ deployment — so treat it as a fairness mechanism, not an abuse control.
 **Authentication throttling is deliberately the opposite.** `app_db/login_guard.py`
 keeps its sliding window in Redis (a sorted set per `(ip, identity)`), shared
 across workers, and **degrades closed**: if Redis is unreachable the in-process
-window still decides, with its cap divided by `LOGIN_GUARD_WORKERS`, so the
+window still decides, with its cap divided by `DBBUDDY_WORKERS`, so the
 limiter becomes stricter rather than vanishing.
 
 The asymmetry is intentional and worth stating, because "use the same limiter

@@ -99,6 +99,16 @@ These are the reason a self-hoster currently gets stuck.
 - [x] SSRF guard: resolve-then-pin the IP at connect time, closing the DNS-rebinding gap.
   The rules moved to `dbbuddy_core/net_guard.py` so the engine — which makes the outbound
   call — can enforce them at the socket, not just at the form.
+- [x] **The first CodeQL pass on the public repository**, triaged in
+  [CODEQL_TRIAGE.md](CODEQL_TRIAGE.md). Seven alerts were real: four quadratic clause
+  extractions on input a caller controls (`/execute` takes raw SQL; the intent builder
+  reads the question), a driver error returned to the client, a password-reset link logged
+  in production, and a credentials file that existed world-readable before being tightened.
+  The rest are recorded with the *measurement* that says the flagged shape is not a
+  reachable weakness, so a dismissal is checkable.
+- [ ] Wire CodeQL into the nightly workflow alongside `pip-audit` / `npm audit`, so the
+  next scan is a diff against a triaged baseline rather than 23 alerts again.
+  **[help wanted]**
 
 ---
 
@@ -227,6 +237,13 @@ rather than a schema to work around it.
   another is exactly the drift the PostgreSQL fix exists to prevent. Pointing at an
   arbitrary schema needs schema-qualified identifier emission, which touches the AST, the
   compiler and the validator — its own item, not a bullet.
+- [x] **A write could be reported as applied and then discarded (PostgreSQL).**
+  `connect_db` issues `SET statement_timeout`, psycopg2 opens a transaction to run it, and
+  nothing committed it — so `conn.autocommit = True` raised, `/execute` swallowed that in a
+  bare `except`, and the `UPDATE` vanished when the connection closed while the response
+  said `1 row(s) affected`. The dialect commits the `SET`; `/execute` commits a write
+  explicitly when autocommit cannot be enabled, on any engine, and logs the reason instead
+  of discarding it.
 
 ### Semantic-layer correction
 The engine already learns mappings. It cannot yet be *told* it is wrong.

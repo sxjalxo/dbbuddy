@@ -57,8 +57,20 @@ def save_credentials(data: dict) -> None:
     d = _config_dir()
     d.mkdir(parents=True, exist_ok=True)
     path = _creds_path()
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    # Best-effort lock-down of the token file (no-op semantics on some Windows FS).
+    # Opened with the mode already set, rather than written and then chmod'ed.
+    # The old order left a window — however short — in which the file holding a
+    # session token existed with the default umask, readable by every other local
+    # account. On a shared or multi-user host that is the whole attack.
+    payload = json.dumps(data, indent=2).encode("utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(path, flags, stat.S_IRUSR | stat.S_IWUSR)
+    try:
+        os.write(fd, payload)
+    finally:
+        os.close(fd)
+
+    # An existing file keeps its old mode through O_CREAT, so tighten it too.
+    # Best-effort: POSIX permissions are advisory on some Windows filesystems.
     try:
         os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
     except OSError:

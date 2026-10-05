@@ -12,6 +12,27 @@ logger = logging.getLogger(__name__)
 
 
 # Phase 18.5: Main entry point delegates to orchestrator
+def _analysis_failure_message(*, engine: str, database: str, host: str, exc: Exception) -> str:
+    """What the caller is told when schema analysis fails, and what only the log sees.
+
+    The exception text is **not** included. This message is returned to the client
+    as a 502 ``detail``, and a database driver's error routinely embeds the DSN,
+    the host and port, and the username of the customer's database — precisely the
+    reconnaissance an authenticated-but-untrusted caller is after, and of no use to
+    a legitimate one. Every other ``DatabaseUnavailableError`` raise site is a fixed
+    string; this one interpolated the driver.
+
+    The engine, database and host stay: they are the caller's own connection
+    details, and without them "analysis failed" does not say *which* connection.
+    """
+    logger.error("Schema analysis failed for %s database %r on %s: %s",
+                 engine, database, host, exc, exc_info=True)
+    return (
+        f"Could not analyze {engine} database '{database}' on {host}. "
+        f"Check the server log for the underlying error."
+    )
+
+
 def process_query(config: DBConfig | None = None, user_query: str = "", **kwargs):
     """Process user query through deterministic pipeline.
 
@@ -262,11 +283,12 @@ def process_schema(config: DBConfig | None = None, **kwargs):
         # driver, unknown database, …) instead of silently returning null —
         # otherwise /analyze responds 200 with `null` and the UI shows neither
         # metadata nor an error.
-        logger.error(f"Schema analysis failed: {exc}")
         from dbbuddy_core.db import DatabaseUnavailableError
         raise DatabaseUnavailableError(
-            f"Could not analyze {config.engine} database "
-            f"'{config.database}' on {config.host}: {exc}"
+            _analysis_failure_message(
+                engine=config.engine, database=config.database,
+                host=config.host, exc=exc,
+            )
         ) from exc
 
     schema = ctx.schema

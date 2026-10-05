@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Any
 
 from dbbuddy_core.logger import get_logger
 from dbbuddy_core.semantic_roles import is_identifier_name
+from dbbuddy_core.text_spans import clause_between
 
 logger = get_logger()
 
@@ -51,13 +52,19 @@ RANKING_KEYWORDS = {
 # *measure* and the thing being ranked comes before it — the opposite of "total
 # revenue by nation". Read the wrong way round, the plan groups by the measure
 # column and aggregates the dimension: SUM over a text column, ranked.
-_RANKING_DIMENSION = re.compile(r"\b(?:top|bottom)\s+\d+\s+(.+?)\s+by\s+")
+# An opening and a terminator, not one lazy span. As
+# `\b(?:top|bottom)\s+\d+\s+(.+?)\s+by\s+` this restarted at every "top N" in the
+# text and scanned to the end each time — and the text is the user's question, so
+# a repeated "top 1 " cost a few hundred milliseconds of CPU per request before a
+# database was touched. See dbbuddy_core/text_spans.py.
+_RANKING_OPENING = re.compile(r"\b(?:top|bottom)\s+\d+\b")
+_RANKING_BY = re.compile(r"\bby\b")
 
 
 def ranking_dimension_phrase(query: str) -> Optional[str]:
     """The phrase a "top N … by …" question ranks, or None if it is not one."""
-    match = _RANKING_DIMENSION.search(query.lower())
-    return match.group(1).strip() if match else None
+    phrase = clause_between(query.lower(), _RANKING_OPENING, [_RANKING_BY])
+    return phrase or None
 
 
 def extract_grouping_table(query: str, tables: List[str],

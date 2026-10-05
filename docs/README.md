@@ -19,6 +19,7 @@ map. Reporting a vulnerability: [SECURITY.md](../SECURITY.md).
 | [QA_CHECKLIST.md](QA_CHECKLIST.md) | Manual + automated QA checklist and findings. |
 | [PRE_DEPLOYMENT_REVIEW.md](PRE_DEPLOYMENT_REVIEW.md) | System-design review ahead of deployment: correctness and scalability findings, ordered by what breaks first, with a suggested sequence. **Start here before scaling past one worker** — it lists exactly which shared state is process-local and what that costs. |
 | [STRESS_ASSESSMENT.md](STRESS_ASSESSMENT.md) | End-to-end stress test of every documented feature (8 datasets, ~1,000 automated tests, adversarial probes) plus a system-design and cybersecurity assessment. The harness-driven pass found nothing; a later pass that fuzzed the compiler directly with a hostile schema found four real defects the green suite had missed — all fixed, and the lesson is recorded there. |
+| [CODEQL_TRIAGE.md](CODEQL_TRIAGE.md) | The first CodeQL scan of the public repository: which alerts were real and fixed, and — for the ones dismissed — the measurement that says the flagged shape is not a reachable weakness. |
 | [ROADMAP.md](ROADMAP.md) | Where the project is going, what is explicitly not planned, and which items are open for contribution. |
 
 ## Before you deploy
@@ -31,8 +32,8 @@ reasoning in [SECURITY.md](SECURITY.md).
 | --- | --- |
 | `DBBUDDY_ENV=production` | Turns the dev-friendly defaults into fail-fast startup errors, so a missing `JWT_SECRET` / `APP_SECRET_KEY` / `ALLOWED_ORIGINS` / non-SQLite DB URL refuses to boot instead of running insecure. |
 | `AI_PROVIDER_BLOCK_PRIVATE_NETWORKS=1` | Required for hosted / multi-tenant installs — an AI provider's `base_url` is a URL *this server* fetches. Cloud instance metadata is refused regardless; this also refuses LAN/loopback. |
-| `LOGIN_GUARD_WORKERS` | Your uvicorn worker count. The login throttle is a shared Redis window; this sizes the fallback if Redis is unreachable. |
-| `ERP_MAX_CONCURRENT_QUERIES` | Per-target ceiling on queries against a connected database — **per process**, so set it to `desired_total / worker_count`. |
+| `DBBUDDY_WORKERS` | Your uvicorn worker count. A worker cannot detect its siblings, so this is declared. It sizes the login throttle's fallback if Redis is unreachable, and is reported by `GET /runtime-profile`. (`LOGIN_GUARD_WORKERS` is the old name and still works.) |
+| `ERP_MAX_CONCURRENT_QUERIES` | Per-target ceiling on queries against a connected database. **Global when Redis is reachable — do not divide it by your worker count.** Without Redis it degrades to a per-process ceiling, so N workers allow N× (bounded, never unlimited). |
 
 ## Supported database engines
 

@@ -625,6 +625,32 @@ instruction a model may ignore, so no guarantee rests on one.
 - A per-request correlation id (`X-Request-ID`, honored inbound and echoed back)
   ties audit rows to requests.
 
+## Static analysis
+
+CodeQL runs on the public repository. Its findings are triaged in
+[CODEQL_TRIAGE.md](CODEQL_TRIAGE.md) rather than acted on by rule name, because the
+regular-expression rules in particular fire on a *shape* and the shape is not always the
+problem: the same pattern is quadratic under `re.search` and linear under `re.match`, and
+the rule reads the pattern, not the call.
+
+The working rule for this project: **measure before fixing, and record the measurement
+before dismissing.** Time the pattern against an input built to maximise restarts — repeat
+its opening keyword — at two sizes; a ratio near 2× is linear, near 4× is quadratic. A
+dismissal without that number is a shrug, and the next person cannot check it.
+
+Two conventions follow from the first scan:
+
+- **Clause extraction goes through `dbbuddy_core/text_spans.py`.** `KEYWORD\s+(.+?)\s+END`
+  restarts at every position the opening keyword matches and scans to the end from each, so
+  input that repeats the keyword is quadratic — and `/execute` takes raw SQL while the
+  intent builder reads the question directly, so that input is uncontrolled. Use
+  `clause_between`, which does two anchored searches instead. A cleverer regex is not the
+  fix; the cost is the number of starting positions.
+- **A driver error is not a client-facing message.** Driver text routinely embeds the DSN,
+  host, port and username of the *customer's* database. Name the engine, database and host
+  — the caller's own connection details, which is what identifies *which* connection failed
+  — and send the driver text to the log, where the operator who needs it is.
+
 ## Production checklist (security-relevant)
 
 - [ ] `DBBUDDY_ENV=production` (turns the checks below into fail-fast startup errors).
@@ -641,10 +667,13 @@ instruction a model may ignore, so no guarantee rests on one.
 - [ ] Redis reachable — it now backs the **login throttle**, not just caching.
       Without it authentication throttling degrades to a stricter per-process
       window (still enforced), and the query rate limiter fails open entirely.
-- [ ] `LOGIN_GUARD_WORKERS` set to your uvicorn worker count, so the degraded
+- [ ] `DBBUDDY_WORKERS` set to your uvicorn worker count, so the degraded
       login limit stays near the intended global one if Redis is unavailable.
-- [ ] `ERP_MAX_CONCURRENT_QUERIES` set to `desired_total / worker_count` — the
-      per-target ceiling is per process.
+      (`LOGIN_GUARD_WORKERS` is the old name for the same setting.)
+- [ ] `ERP_MAX_CONCURRENT_QUERIES` set to the total you want a target database
+      to see. With Redis the ceiling is **global** — do not divide it by the
+      worker count. Without Redis it degrades to per-process, and N workers
+      allow N× it.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the full production checklist.
 

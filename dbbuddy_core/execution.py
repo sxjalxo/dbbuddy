@@ -18,6 +18,7 @@ from dbbuddy_core.query import safe_execute, get_query_type, validate_against_sc
 # existing importers keep working unchanged:
 #     from dbbuddy_core.execution import compile_sql, compile_parameterized_sql
 from dbbuddy_core.sql.compiler import compile_parameterized_sql, compile_sql  # noqa: F401
+from dbbuddy_core.text_spans import clause_between
 
 logger = get_logger()
 
@@ -35,6 +36,18 @@ COMPILER_VERSION = "v2"
 # These limits prevent DB overload and ensure system stability
 MAX_ROWS = 1000  # Maximum rows to return from a query
 MAX_EXECUTION_TIME = 2.0  # Maximum execution time in seconds
+
+
+# Keyword anchors for clause extraction. Compiled once, and word-bounded so
+# "fromage" is not a FROM — the old patterns got that from the surrounding `\s+`.
+_SELECT_KW = re.compile(r"\bselect\b", re.IGNORECASE)
+_FROM_KW = re.compile(r"\bfrom\b", re.IGNORECASE)
+_GROUP_BY_KW = re.compile(r"\bgroup\s+by\b", re.IGNORECASE)
+_HAVING_KW = re.compile(r"\bhaving\b", re.IGNORECASE)
+_ORDER_BY_KW = re.compile(r"\border\s+by\b", re.IGNORECASE)
+_LIMIT_KW = re.compile(r"\blimit\b", re.IGNORECASE)
+_WHERE_KW = re.compile(r"\bwhere\b", re.IGNORECASE)
+_SET_KW = re.compile(r"\bset\b", re.IGNORECASE)
 
 
 def _extract_count(result: dict) -> int | None:
@@ -198,18 +211,19 @@ def validate_aggregation(sql: str) -> dict:
     """
     sql_lower = sql.lower().strip()
 
-    # Extract SELECT clause
-    select_match = re.search(r'select\s+(.+?)\s+from', sql_lower, re.IGNORECASE | re.DOTALL)
-    if not select_match:
+    # Extract SELECT clause. Two anchored scans rather than `select\s+(.+?)\s+from`:
+    # that shape restarts at every `select` in the input and scans to the end each
+    # time, which a caller can make quadratic with raw SQL — see text_spans.
+    select_clause = clause_between(sql_lower, _SELECT_KW, [_FROM_KW])
+    if select_clause is None:
         return {"valid": True, "error": None, "violations": []}
 
-    select_clause = select_match.group(1)
-
     # Extract GROUP BY clause
-    group_by_match = re.search(r'group by\s+(.+?)(?:\s+having|\s+order by|\s+limit|$)', sql_lower, re.IGNORECASE)
+    group_by_clause = clause_between(
+        sql_lower, _GROUP_BY_KW, [_HAVING_KW, _ORDER_BY_KW, _LIMIT_KW], required_end=False,
+    )
     group_by_columns = []
-    if group_by_match:
-        group_by_clause = group_by_match.group(1)
+    if group_by_clause is not None:
         # Split by comma and clean up
         group_by_columns = [col.strip() for col in group_by_clause.split(',')]
 
@@ -242,8 +256,10 @@ def validate_aggregation(sql: str) -> dict:
         if '.' in col_clean:
             col_clean = col_clean.split('.')[-1]
 
-        # Remove any remaining function calls or expressions
-        col_clean = re.sub(r'\([^)]*\)', '', col_clean)
+        # Remove any remaining function calls or expressions.
+        # `[^()]*` rather than `[^)]*`: the latter lets every unmatched "(" scan to
+        # the end of the string, which is quadratic on input like "((((((…".
+        col_clean = re.sub(r'\([^()]*\)', '', col_clean)
         col_clean = col_clean.strip()
 
         # Check if this column is in GROUP BY
@@ -301,10 +317,9 @@ def get_dry_run_estimate(sql: str, conn) -> dict:
             table_match = re.search(r'UPDATE\s+(\w+)', sql, re.IGNORECASE)
             if table_match:
                 table = table_match.group(1)
-                where_match = re.search(r'WHERE\s+(.+?)(?:\s+LIMIT|$)', sql, re.IGNORECASE)
+                where_clause = clause_between(sql, _WHERE_KW, [_LIMIT_KW], required_end=False)
 
-                if where_match:
-                    where_clause = where_match.group(1)
+                if where_clause:
                     count_sql = f"SELECT COUNT(*) FROM {table} WHERE {where_clause}"
                 else:
                     count_sql = f"SELECT COUNT(*) FROM {table}"
@@ -313,10 +328,9 @@ def get_dry_run_estimate(sql: str, conn) -> dict:
                 estimated_rows = _extract_count(result)
                 if estimated_rows is not None:
                     # Extract affected columns
-                    set_match = re.search(r'SET\s+(.+?)\s+WHERE', sql, re.IGNORECASE)
+                    set_clause = clause_between(sql, _SET_KW, [_WHERE_KW])
                     affected_columns = []
-                    if set_match:
-                        set_clause = set_match.group(1)
+                    if set_clause:
                         for col in set_clause.split(','):
                             col = col.strip().split('=')[0].strip()
                             affected_columns.append(col)

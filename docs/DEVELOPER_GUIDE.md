@@ -378,6 +378,13 @@ docs too before deleting:
 - Parameterize user-derived values in SQL — never string-interpolate them.
 - Prefer keyword construction for dataclasses like `DBConfig` (fields are added
   over time; positional construction is brittle).
+- **Pull a clause out of SQL or a question with `dbbuddy_core/text_spans.py`**, not
+  with `KEYWORD\s+(.+?)\s+END`. That shape restarts at every position the opening
+  keyword matches and scans to the end from each, so a caller who repeats the keyword
+  makes it quadratic — `"select " * 3000` cost 481 ms in one call. `/execute` takes raw
+  SQL and the intent builder reads the question directly, so this input is not ours.
+  `clause_between` does two anchored searches for the same span. See
+  [CODEQL_TRIAGE.md](CODEQL_TRIAGE.md).
 
 **Frontend**
 - Keep to the existing Tailwind + component patterns; match surrounding style.
@@ -393,7 +400,7 @@ density, structure) rather than introducing a new style.
 
 ## Database migrations
 
-Application-DB schema changes go through **Alembic** (`backend/migrations/`, `0001`–`0018`). Add
+Application-DB schema changes go through **Alembic** (`backend/migrations/`, `0001`–`0020`). Add
 a migration for any model change; the app runs `alembic upgrade head` on startup.
 
 ## Change Hygiene

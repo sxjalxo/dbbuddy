@@ -137,7 +137,7 @@ Beyond the suites, four security/correctness boundaries were driven directly:
 
 ### Design risks / limits (all documented, none are defects)
 
-1. **Process-local shared state caps the app at effectively one worker for a few concerns** (`PRE_DEPLOYMENT_REVIEW.md` P0). Per-DB context, AI metrics, AI circuit breaker, ERP semaphores, and the access-token revocation cache are per-process. With N workers: cold-cache inconsistency until each warms, N× the intended ERP load unless `ERP_MAX_CONCURRENT_QUERIES` is divided down, breaker retried N× longer, and a revoked access token honored for up to `AUTH_REVOCATION_CACHE_TTL` (10 s) on workers that didn't handle the logout. **This is the first thing to fix before horizontal scaling** and the docs say so plainly. A true global ERP ceiling and global breaker need Redis.
+1. ~~**Process-local shared state caps the app at effectively one worker for a few concerns**~~ (`PRE_DEPLOYMENT_REVIEW.md` P0). **Largely resolved (2026-08-25):** the ERP concurrency ceiling is now counted in Redis as expiring leases, so `ERP_MAX_CONCURRENT_QUERIES` is a real global limit and must no longer be divided down; session revocation broadcasts, so a logout reaches every worker in ~40 ms instead of each converging on its own TTL; and `DBBUDDY_WORKERS` plus `GET /runtime-profile` make the declared topology inspectable. What is still per-process is **performance state, not security state**: the AI metrics and circuit breaker (a provider is retried N× longer than intended), and the prepared per-DB context — deliberately so, since it holds a live connection pool and a Chroma handle, neither serializable. Its *invalidation* does broadcast. Without Redis every one of these degrades to the previous per-process behaviour, never to unlimited.
 
 2. **Query rate limiter fails open.** By design (it protects throughput, not auth), but it means it is a fairness mechanism, not an abuse control, on single-node deployments with no Redis. Correct trade — just size expectations accordingly.
 
@@ -148,7 +148,7 @@ Beyond the suites, four security/correctness boundaries were driven directly:
 ### Recommended sequence (from the review, confirmed still current)
 
 1. Re-record benchmark baseline on the reference machine (removes a false-alarm signal).
-2. Move the P0 process-local security/limit state (revocation cache, ERP ceiling, breaker) to shared Redis before running >1 worker.
+2. ~~Move the P0 process-local security/limit state to shared Redis before running >1 worker.~~ **Done** for the security half (revocation broadcast, global ERP ceiling); the AI breaker remains per-worker and cosmetic.
 3. Prompt-budget pass for Insights.
 4. Replace the relation-graph quadratic pair generation (QA #13) so the compute bound can be retired.
 

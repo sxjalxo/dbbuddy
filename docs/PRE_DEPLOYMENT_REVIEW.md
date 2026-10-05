@@ -40,33 +40,34 @@ Seven separate pieces of state live in module-level dicts guarded by a
 
 | State | Location | What breaks with 2+ workers |
 | --- | --- | --- |
-| Prepared per-DB context (schema, semantic layer, pool) | `context_store._contexts` / `_pools` | Each worker builds its own; "Analyze Schema" warms one worker, others stay cold. Users see inconsistent latency and — until each rebuilds — potentially different semantic labels. |
+| Prepared per-DB context (schema, semantic layer, pool) | `context_store._contexts` / `_pools` | **Per worker by design, and that is the honest answer**: a context holds a live connection pool and a Chroma handle, neither serializable. Each worker builds its own, so "Analyze Schema" warms one and the others stay cold until they rebuild — a latency difference, not a correctness one. What *does* cross workers is invalidation: a rebuild broadcasts and the others drop their copy. |
 | ~~Login throttle~~ | ~~`login_guard._failures`~~ | **RESOLVED.** Now backed by a shared Redis sliding window (a sorted set per key), so the configured limit is the real limit at any worker count. The in-process deque is still maintained and takes over if Redis is unreachable — with the cap divided by `LOGIN_GUARD_WORKERS`, so the limiter gets *stricter* when the shared view is lost, never laxer, and never disappears. See *Authentication throttling* below. |
 | AI provider metrics | `ai_metrics._stats` | `/ai-metrics` reports one worker's view; the dashboard understates real traffic. |
 | AI circuit breaker | `ai_providers._breaker` | Each worker trips independently, so an unhealthy provider is retried N× longer than intended. |
-| ERP concurrency semaphores | `erp_concurrency._semaphores` | The per-target ceiling is per worker, so N workers put N× the configured load on a target database. Set `ERP_MAX_CONCURRENT_QUERIES = desired_total / worker_count`. |
-| Access-token revocation cache | `deps._rev_cache` | **Security control that weakens as you scale**, like the login throttle. Each worker caches `(token_version, is_active)` independently. `invalidate_revocation()` reaches only the worker that handled the logout/deactivation, so on the other N−1 a revoked access token keeps working for up to `AUTH_REVOCATION_CACHE_TTL` (default 10 s). Bounded and short by design — the TTL *is* the convergence bound — but not zero. |
+| ~~ERP concurrency semaphores~~ | ~~`erp_concurrency._semaphores`~~ | **RESOLVED.** The count now lives in Redis as a sorted set of expiring leases per target, so `ERP_MAX_CONCURRENT_QUERIES` is a real global ceiling and must *not* be divided by the worker count. A worker that dies mid-query does not shrink the ceiling permanently — its lease expires. Without Redis it degrades to the per-process semaphore (N workers → N×), never to unlimited. |
+| ~~Access-token revocation cache~~ | ~~`deps._rev_cache`~~ | **RESOLVED.** The cache is still per worker — it is a cache in front of an authoritative check, and sharing it would put a Redis round-trip on the query hot path — but *invalidation* no longer is. The revoking worker publishes the user id and every worker drops its own entry on receipt (~40 ms, measured across two processes), instead of each converging on its own `AUTH_REVOCATION_CACHE_TTL`. Without Redis it degrades to exactly the previous TTL behaviour. |
 | Redis client singleton | `context_store._shared_cache` | Benign (one client per worker is correct). |
 
-**Recommendation.** The security-relevant ones first. `login_guard` is **done**
-(see *Authentication throttling*). `deps._rev_cache` remains process-local by
-design: unlike the login throttle it is a *cache in front of* an authoritative
-check, its staleness is bounded by a short TTL that is documented as the
-convergence window, and making it shared would put a Redis round-trip on the
-query hot path — the exact cost it exists to avoid. It is a bounded, disclosed
-window, not an unbounded weakening.
+**Recommendation.** The security-relevant ones went first, and all three are now
+**done**: the login throttle (see *Authentication throttling*), revocation
+invalidation (broadcast, ~40 ms), and the ERP concurrency ceiling (Redis leases,
+a real global limit). `deps._rev_cache` itself stays process-local by design — it
+is a *cache in front of* an authoritative check, and sharing the reads would put a
+Redis round-trip on the query hot path, the exact cost it exists to avoid. What
+changed is that its staleness no longer has to be waited out.
 
-What remains is therefore **performance state, not security state**: the AI
-breaker and metrics (cosmetic — a provider is retried N× longer than intended,
-and `/ai-metrics` shows one worker's view), the ERP semaphores (bounded by
-setting `ERP_MAX_CONCURRENT_QUERIES = desired_total / worker_count`), and the
-prepared context — the expensive one, and best kept as a deliberate per-worker
-cache with a documented warm-up cost rather than made distributed.
+What remains is **performance state, not security state**: the AI breaker and
+metrics (cosmetic — a provider is retried N× longer than intended, and
+`/ai-metrics` shows one worker's view), and the prepared context — the expensive
+one, and deliberately a per-worker cache with a documented warm-up cost rather
+than something made distributed.
 
-**If you deploy multi-worker now:** set `LOGIN_GUARD_WORKERS` and
-`ERP_MAX_CONCURRENT_QUERIES` to match the worker count, and accept a ≤
-`AUTH_REVOCATION_CACHE_TTL` revocation window. `--workers 4` used to quietly
-multiply the brute-force budget by four; that specific trap is closed.
+**If you deploy multi-worker now:** set `DBBUDDY_WORKERS` to the real count, run
+Redis, and check `GET /runtime-profile` after deploying — it reports exactly what
+is shared and what is not. Do **not** divide `ERP_MAX_CONCURRENT_QUERIES` by the
+worker count any more; with Redis it is already global. `--workers 4` used to
+quietly multiply both the brute-force budget and the load on a customer's
+database by four; both traps are closed.
 
 ### Authentication throttling (shared, degrading closed)
 

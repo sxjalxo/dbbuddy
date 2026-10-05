@@ -12,6 +12,7 @@ import os
 import re
 
 from dbbuddy_core.logger import get_logger
+from dbbuddy_core.text_spans import clause_between
 
 logger = get_logger()
 
@@ -27,6 +28,10 @@ logger = get_logger()
 # identifiers still match.
 _IDENT = r"(?:`[^`]+`|\"[^\"]+\"|\[[^\]]+\]|\w+)"
 _QUOTES = {"`": "`", '"': '"', "[": "]"}
+
+
+_SELECT_KW = re.compile(r"\bselect\b", re.IGNORECASE)
+_FROM_KW = re.compile(r"\bfrom\b", re.IGNORECASE)
 
 
 def _unquote(ident: str) -> str:
@@ -60,9 +65,10 @@ def _extract_identifiers(sql: str) -> tuple[list[str], list[str], list[dict]]:
     # Grab everything between SELECT and FROM, plus SET / WHERE clauses
     col_candidates: set[str] = set()
 
-    select_m = re.search(r"select\s+(.*?)\s+from", sql_lower, re.DOTALL)
-    if select_m:
-        raw = select_m.group(1)
+    # Anchored scans, not `select\s+(.*?)\s+from`: that restarts at every `select`
+    # and scans to the end each time — quadratic on caller-supplied SQL.
+    raw = clause_between(sql_lower, _SELECT_KW, [_FROM_KW])
+    if raw is not None:
         # Split on commas, strip aliases (AS x), functions, and wildcards
         for part in raw.split(","):
             part = re.sub(r"\b\w+\s*\(.*?\)", "", part)   # strip function calls

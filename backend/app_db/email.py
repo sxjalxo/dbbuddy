@@ -41,6 +41,17 @@ def transport() -> str:
     return "console"
 
 
+def console_transport_allowed() -> bool:
+    """Whether writing a message body to the log is acceptable here.
+
+    Read at call time, like every other setting in this module, so a container can
+    change it without a reimport. Anything that is not production may log; only
+    ``DBBUDDY_ENV=production`` refuses, matching how every other soft default in
+    ``app_db/config.py`` hardens.
+    """
+    return _setting("DBBUDDY_ENV", "development").lower() != "production"
+
+
 def sender_address() -> str:
     return _setting("EMAIL_FROM", "no-reply@dbbuddy.local")
 
@@ -59,6 +70,19 @@ def send_email(*, to: str, subject: str, body: str) -> bool:
     Never raises: see the module docstring.
     """
     if transport() == "console":
+        if not console_transport_allowed():
+            # A password-reset body is a single-use account-takeover link. Logging
+            # it is the right trade on a development box and unacceptable on a real
+            # one, so production refuses rather than quietly writing secrets to a
+            # log that is shipped, indexed and retained. Returning False also stops
+            # the caller reporting a message as delivered when it was not.
+            logger.error(
+                "Refusing to log an email body in production: SMTP_HOST is unset, so "
+                "%r to %s could not be sent. Configure SMTP_HOST, or run with "
+                "DBBUDDY_ENV=development if this is not a real deployment.",
+                subject, to,
+            )
+            return False
         # Deliberately a log line and not a print: it belongs in the same stream
         # as everything else the backend says, and a container captures it.
         logger.warning(

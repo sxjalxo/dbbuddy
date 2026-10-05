@@ -124,6 +124,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `*.sql` rule (which exists to keep dogfood dumps out) would otherwise have silently
   swallowed the demo's seed file.
 
+- **`dbbuddy_core/text_spans.py`** — `clause_between(text, opening, ends)`, the linear
+  replacement for pulling a clause out of SQL or a question. Four call sites used
+  `KEYWORD\s+(.+?)\s+END`, which restarts at every position the opening keyword matches and
+  scans to the end from each, so repeating the keyword was enough to make it quadratic. Two
+  anchored searches produce the same span without the restarts. Extracted rather than
+  inlined because the four sites had four slightly different spellings of the same idea.
+- **`docs/CODEQL_TRIAGE.md`** — the first CodeQL scan of the public repository raised 23
+  alerts; the file records which seven were real, and for the rest the *measurement* that
+  says they are not, so a dismissal is a decision someone can re-check rather than a shrug.
+
 ### Changed
 - README trimmed from 681 to ~250 lines; depth now lives in `docs/`, which already
   covered it.
@@ -133,6 +143,70 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   be enforced rather than aspirational.
 
 ### Fixed
+- **PostgreSQL writes were reported as applied and then silently discarded.** `connect_db`
+  issues `SET statement_timeout`, and psycopg2 opens a transaction to run it. Nothing
+  committed that transaction, so the very next thing every caller does —
+  `conn.autocommit = True` — raised `set_session cannot be used inside a transaction`.
+  `/execute` swallowed that in a bare `except Exception: pass`, so an `UPDATE` ran inside a
+  transaction nobody would commit, vanished when the connection closed, and the response
+  still said `1 row(s) affected`. The dialect now commits the `SET` it issues, and `/execute`
+  commits a write explicitly when autocommit cannot be enabled for any reason, on any
+  engine, instead of assuming. The failure is logged rather than discarded: a driver that
+  cannot do autocommit at all is why the call was defensive in the first place — not knowing
+  is the part that was unacceptable. `tests/test_execute_write_durability.py`.
+- **SQL Server introspection merged tables from different schemas.** Every
+  `INFORMATION_SCHEMA` query was scoped to *no* schema, so `sales.orders` and `hr.orders`
+  collapsed into one `orders` whose column list was both tables' columns concatenated — and
+  the planner would then join on a column belonging to the other table. Scoping is now
+  `SCHEMA_NAME()`, the connecting user's own default schema rather than a literal `dbo`,
+  which would only have repeated PostgreSQL's hardcoded-`public` mistake. The foreign-key
+  join is scoped on both sides, because a constraint name is unique per schema rather than
+  per database. A requested `db_schema` that is not the session's schema is **refused** with
+  an actionable message: T-SQL has no `search_path`, so introspecting one schema while
+  unqualified names resolve to another is exactly the drift the PostgreSQL fix exists to
+  prevent. `tests/test_sqlserver_schema_scope.py`.
+- **The per-target concurrency ceiling was per worker.** `ERP_MAX_CONCURRENT_QUERIES` is now
+  counted in Redis as a sorted set of expiring leases per target, so it is a real global
+  limit rather than a number operators were told to divide by their worker count. Leases
+  expire, so a worker that dies mid-query does not shrink the ceiling permanently. Admission
+  counts with `ZCARD` after adding optimistically, rather than trusting `ZRANK`: scores come
+  from `time.time()`, whose resolution on Windows is ~15 ms, so concurrent acquirers get
+  identical scores and Redis breaks the tie lexicographically by member — a random token.
+  Late arrivals sorted first and were admitted at rank 0 while the current holders kept
+  their slots, which over-admitted. Without Redis it degrades to the per-process semaphore,
+  never to unlimited: failing open here means an outage at a customer's site rather than
+  ours.
+- **`invalidate()` never dropped a prepared context.** Its prefix scan looked for
+  `host|database|engine|` while the keys were `host|database|schema_hash`, so nothing ever
+  matched and an unchanged schema handed the stale context straight back — the bug hid
+  because the common path re-derives the same hash and looks correct. `_ctx_key()` is now
+  `_db_key() + "|" + schema_hash`, which makes the prefix scan work and puts the engine into
+  the identity at the same time.
+- **Four clause extractions were quadratic on input a caller controls.** `/execute` takes
+  raw SQL and `ranking_dimension_phrase` reads the natural-language question directly, and
+  both fed `KEYWORD\s+(.+?)\s+END` patterns that restart at every occurrence of the opening
+  keyword. Measured on a single call with no database involved: `"select " * 3000` cost
+  **481 ms**, growing 3.8–4.1× per doubling. A cleverer regex does not help — the cost is
+  the number of starting positions, not ambiguity inside the pattern, and
+  `\bselect\b(.*?)\bfrom\b` measured just as quadratic. Rewritten onto `clause_between`:
+  **0.24 ms** at the same size, growing linearly. `execution.py`'s `\([^)]*\)` also became
+  `\([^()]*\)`, so an unmatched paren bounds each attempt instead of scanning to the end.
+- **A driver error was returned to the client.** `/analyze` answers a failure with a 502
+  whose `detail` is the `DatabaseUnavailableError` message, and one raise site interpolated
+  the raw driver exception into it. Driver messages routinely embed the DSN, host, port and
+  username of the *customer's* database — reconnaissance for an authenticated-but-untrusted
+  caller and of no use to a legitimate one. The message now names the engine, database and
+  host, which is what says *which* connection failed and is the caller's own information;
+  the driver text goes to the log, where the operator who needs it actually is.
+- **A password-reset link was written to the log in production.** With `SMTP_HOST` unset the
+  sender logs the message instead of sending it, body included — and a reset body is a
+  single-use account-takeover link. Right for a development box, unacceptable on a real one.
+  Under `DBBUDDY_ENV=production` the console transport is refused and returns `False`, so
+  the caller also stops reporting an undelivered message as sent.
+- **The CLI credentials file existed world-readable before it was tightened.** It was
+  written and *then* `chmod`ed, leaving a window in which any other local account could read
+  the session token. It is now opened with the mode already set
+  (`os.open(path, flags, 0o600)`).
 - **`ORDER BY` emitted an aggregate as a quoted identifier.** `compile_sql` wrapped a dict
   `order_by` into a single-element list before the assembly block tested
   `isinstance(order_by, dict)`, so every aggregate-aware branch was unreachable and each
@@ -193,7 +267,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Introspection now follows `current_schemas(false)`, and a schema can be named on the
   connection (`DBConfig.db_schema`, `dbbuddy … --schema`), which sets the session's
   `search_path` so discovery and execution stay on the same path. MySQL has no level below
-  the database and ignores the setting; SQL Server's `dbo` assumption is unchanged for now.
+  the database and ignores the setting; SQL Server is covered by its own entry above.
 - README stated the license as MIT. The project is, and always was, Apache License 2.0
   (see `LICENSE`).
 - `docs/SECURITY.md` carried a placeholder security contact; it now points at GitHub
