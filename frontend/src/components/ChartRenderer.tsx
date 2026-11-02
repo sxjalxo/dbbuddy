@@ -31,15 +31,7 @@ import {
 } from "recharts";
 
 export type ChartType =
-  | "bar"
-  | "column"
-  | "line"
-  | "area"
-  | "pie"
-  | "doughnut"
-  | "scatter"
-  | "combo"
-  | "table";
+  "bar" | "column" | "line" | "area" | "pie" | "doughnut" | "scatter" | "combo" | "table";
 
 /**
  * The stored visual config. This module is the *only* thing that interprets it —

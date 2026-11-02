@@ -152,7 +152,7 @@ export ADMIN_PASSWORD="<a strong password>"
 
 # 4. Frontend: install + build
 cd frontend
-npm install        # or: bun install
+npm install        # package-lock.json is the only lockfile; don't introduce a second
 VITE_API_BASE="https://your-api-host" npm run build   # outputs static assets to dist/
 cd ..
 ```

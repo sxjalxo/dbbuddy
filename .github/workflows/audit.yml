@@ -32,7 +32,26 @@ jobs:
       - run: pip install pip-audit
       - name: Audit runtime dependencies
         # Resolves the floors in requirements.txt and audits what they resolve to.
-        run: pip-audit -r requirements.txt --strict
+        #
+        # The four chromadb advisories are ignored for one reason that covers all
+        # of them: each describes the Chroma *server* — the `/api/v2/...` HTTP
+        # endpoints, cross-tenant authorization, and SimpleRBACAuthorizationProvider.
+        # dbbuddy embeds Chroma in-process (`chromadb.PersistentClient` in
+        # `dbbuddy_core/vector_store.py`): no listener, no tenants, no auth
+        # provider, so none of the vulnerable code paths are reachable. None of
+        # them has a fixed version in any chromadb release either, so there is
+        # nothing to upgrade to — the choice is an explained ignore or a check
+        # that is permanently red and therefore unread.
+        #
+        # Drop these the moment chromadb ships a fix, and let it fail honestly.
+        # If dbbuddy ever switches to `chromadb.HttpClient`, they become real and
+        # this block must go with it.
+        run: >
+          pip-audit -r requirements.txt --strict
+          --ignore-vuln PYSEC-2026-311
+          --ignore-vuln PYSEC-2026-3813
+          --ignore-vuln PYSEC-2026-3814
+          --ignore-vuln PYSEC-2026-3815
 
   javascript:
     name: npm audit
